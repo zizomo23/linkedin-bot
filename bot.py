@@ -12,7 +12,7 @@ from telegram.error import Forbidden
 TOKEN = "8755292870:AAGYFk5t_MddvDfN0lgZnhsDMTQYDxJI0Ps"
 
 # الرابط الخاص بسيرفرك على Render
-SERVER_URL = "https://linkedin-bot-9v0k.onrender.com" 
+SERVER_URL = "https://my-linkedin-bot.onrender.com" 
 
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 
@@ -22,6 +22,7 @@ user_daily_posts = {}         # تتبع النشر اليومي {user_id: "YYYY
 posts_queue = []              # طابور الانتظار للينكات المقبولة
 last_post_time = 0            # توقيت آخر بوست تم نشره في الجروب
 GROUP_CHAT_ID = None          # سيتم حفظ ايدي الجروب تلقائياً للنشر فيه
+BOT_USERNAME = None           # يورزر نيم البوت للربط العميق
 
 COOLDOWN_SECONDS = 1800       # 30 دقيقة بين كل بوست والثاني
 
@@ -64,22 +65,38 @@ def get_keyboard(user_id):
     ]
     return InlineKeyboardMarkup(keyboard)
 
+# أمر /start - بيشتغل لما العضو يضغط على زرار الخاص
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "أهلاً بك! 👋\n"
-        "أنا بوت تنظيم تفاعل جروب LinkedIn.\n"
-        "عند إرسال رابطك في الجروب، سأقوم بفحص تفاعلك هنا في الخاص قبل نشر رابطك لضمان العدالة والوصول للجميع! 🚀"
-    )
+    user_id = update.effective_user.id
+    user_name = update.effective_user.first_name
+
+    # لو العضو عنده فحص معلق (جاي من الجروب)
+    if user_id in user_verifications:
+        await update.message.reply_text(
+            f"✋ أهلاً يا {user_name}، جاري فحص تفاعلك قبل نشر بوستك في الجروب!\n\n"
+            f"📌 **الخطوة 1 من 3:**\n"
+            f"افتح الرابط التالي واعمل اللايك، ثم اضغط تأكيد.",
+            reply_markup=get_keyboard(user_id)
+        )
+    else:
+        await update.message.reply_text(
+            "أهلاً بك! 👋\n"
+            "أنا بوت تنظيم تفاعل جروب LinkedIn.\n"
+            "انشر رابطك في الجروب وسأقوم بتحويلك هنا للفحص التلقائي ونشره للجميع! 🚀"
+        )
 
 async def check_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global GROUP_CHAT_ID
+    global GROUP_CHAT_ID, BOT_USERNAME
     message = update.message
     if not message or not message.text:
         return
 
-    # حفظ ايدي الجروب للإنزال التلقائي
+    # حفظ ايدي الجروب اسم البوت
     if message.chat.type in ["group", "supergroup"]:
         GROUP_CHAT_ID = message.chat_id
+        if not BOT_USERNAME:
+            bot_info = await context.bot.get_me()
+            BOT_USERNAME = bot_info.username
 
     text = message.text
     user_id = message.from_user.id
@@ -99,20 +116,24 @@ async def check_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         valid_link = matches[0]
 
-        # مسح رسالة العضو فوراً للحفاظ على نظافة الجروب
+        # مسح رسالة العضو فوراً للنظافة
         try:
             await message.delete()
         except Exception:
             pass
 
-        # 1. شرط اللينك الواحد يومياً (الرسالة تتبعت خاص)
+        # 1. شرط اللينك الواحد يومياً
         if user_daily_posts.get(user_id) == today_str:
+            btn = InlineKeyboardMarkup([[InlineKeyboardButton("📩 افتح الخاص", url=f"https://t.me/{BOT_USERNAME}")]])
+            msg = await context.bot.send_message(
+                chat_id=message.chat_id,
+                text=f"⚠️ يا {user_name}، مسموح لك بنشر **لينك واحد فقط يومياً**. يمكنك النشر غداً مجدداً!",
+                reply_markup=btn
+            )
+            await asyncio.sleep(15)
             try:
-                await context.bot.send_message(
-                    chat_id=user_id,
-                    text=f"⚠️ عذراً يا {user_name}، مسموح لك بنشر **لينك واحد فقط يومياً** للحفاظ على تفاعل الجروب.\nيمكنك النشر غداً مجدداً! 🌸"
-                )
-            except Forbidden:
+                await msg.delete()
+            except Exception:
                 pass
             return
 
@@ -127,7 +148,7 @@ async def check_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
 
-        # 3. إعداد بيانات الفحص
+        # 3. حفظ بيانات الفحص مع تجهيز رابط الانتقال للخاص
         last_3_links = recent_links[-3:]
 
         user_verifications[user_id] = {
@@ -139,32 +160,23 @@ async def check_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "links_to_verify": last_3_links
         }
 
-        # 4. إرسال خطوات الفحص للمستخدم في الخاص (DM)
-        bot_info = await context.bot.get_me()
+        # 4. إرسال زرار توجيه للخاص في الجروب (يمسح نفسه بعد 25 ثانية)
+        start_private_btn = InlineKeyboardMarkup([[
+            InlineKeyboardButton("📩 اضغط هنا لإكمال الفحص بالخاص", url=f"https://t.me/{BOT_USERNAME}?start=verify")
+        ]])
+        
+        prompt_msg = await context.bot.send_message(
+            chat_id=message.chat_id,
+            text=f"✋ يا {user_name}، اضغط على الزرار بالأسفل لبدء فحص التفاعل في الخاص لنشر بوستك!",
+            reply_markup=start_private_btn
+        )
+
+        # مسح التنبيه بعد 25 ثانية ليبقى الجروب نظيفاً
+        await asyncio.sleep(25)
         try:
-            await context.bot.send_message(
-                chat_id=user_id,
-                text=f"✋ أهلاً يا {user_name}، جاري فحص تفاعلك قبل نشر بوستك في الجروب!\n\n"
-                     f"📌 **الخطوة 1 من 3:**\n"
-                     f"افتح الرابط التالي واعمل اللايك، ثم اضغط تأكيد.",
-                reply_markup=get_keyboard(user_id)
-            )
-        except Forbidden:
-            # لو العضو مكنش داس Start للبوت في الخاص قبل كده
-            start_btn = InlineKeyboardMarkup([[
-                InlineKeyboardButton("📩 اضغط هنا للبدء في الخاص", url=f"https://t.me/{bot_info.username}?start=verify")
-            ]])
-            temp_msg = await context.bot.send_message(
-                chat_id=message.chat_id,
-                text=f"⚠️ يا {user_name}، يرجى الضغط على الزرار بالأسفل لفتح الخاص مع البوت وإكمال الفحص!",
-                reply_markup=start_btn
-            )
-            # مسح التنبيه بعد 20 ثانية لحماية نظافة الجروب
-            await asyncio.sleep(20)
-            try:
-                await temp_msg.delete()
-            except Exception:
-                pass
+            await prompt_msg.delete()
+        except Exception:
+            pass
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global last_post_time
@@ -212,27 +224,25 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             now = time.time()
             time_since_last = now - last_post_time
 
-            # النشر الفوري لو الوقت مناسب والطابور فاضي
             if time_since_last >= COOLDOWN_SECONDS and len(posts_queue) == 0:
                 last_post_time = now
                 recent_links.append({"user": user_name, "link": pending_link})
                 if len(recent_links) > 15:
                     recent_links.pop(0)
 
-                # إرسال البوست فقط للجروب (نظيف)
+                # نشر البوست للجروب
                 if GROUP_CHAT_ID:
                     await context.bot.send_message(
                         chat_id=GROUP_CHAT_ID,
                         text=f"🚀 **بوست جديد تم نشره!**\n\n👤 الناشر: {user_name}\n🔗 الرابط: {pending_link}"
                     )
 
-                # إرسال تأكيد النجاح للعضو في الخاص
+                # رسالة النجاح بالخاص
                 await query.message.edit_text(
                     f"🎉 **تم بنجاح يا {user_name}!**\n\n"
                     f"✅ اجتزت الفحص بنجاح، وتم نشر بوستك الآن مباشرة في الجروب!"
                 )
             else:
-                # إضافة البوست للطابور وإبلاغ المستخدم في الخاص
                 posts_queue.append({"user": user_name, "link": pending_link, "user_id": user_id})
                 queue_position = len(posts_queue)
                 
@@ -257,7 +267,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 reply_markup=get_keyboard(user_id)
             )
 
-# --- محرك الطابور الآلي (ينشر في الجروب فقط) ---
+# --- محرك الطابور الآلي ---
 async def queue_dispatcher(app):
     global last_post_time
     while True:
@@ -273,7 +283,6 @@ async def queue_dispatcher(app):
                 recent_links.pop(0)
 
             try:
-                # النشر في الجروب بشكل أنيق وبدون أي تعقيد
                 await app.bot.send_message(
                     chat_id=GROUP_CHAT_ID,
                     text=f"📢 **دور النشر وصل من الطابور!**\n\n"
@@ -282,7 +291,6 @@ async def queue_dispatcher(app):
                          f"💡 التفاعل متاح الآن، شاركوا الدعم!"
                 )
                 
-                # إشعار العضو في الخاص إن بوسته نزل الآن
                 try:
                     await app.bot.send_message(
                         chat_id=next_post["user_id"],
