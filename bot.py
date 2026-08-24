@@ -9,8 +9,7 @@ from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, Messa
 
 TOKEN = "8755292870:AAGYFk5t_MddvDfN0lgZnhsDMTQYDxJI0Ps"
 
-# الرابط الخاص بسيرفرك بعد الرفع (سنتستبدله بعد الرفع على Render)
-# مثال: SERVER_URL = "https://my-link-bot.onrender.com"
+# الرابط الخاص بسيرفرك على Render
 SERVER_URL = "https://linkedin-bot-9v0k.onrender.com" 
 
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
@@ -27,12 +26,11 @@ async def handle_redirect(request):
             user_data = user_verifications[user_id]
             current_step = user_data["current_step"]
             
-            # تسجيل إن العضو فتح اللينك فعلياً ورصد الوقت
+            # تسجيل فتح اللينك وبدء العداد اللحظي
             user_data["has_clicked_redirect"] = True
             user_data["link_opened_time"] = time.time()
             
             target_link = user_data["links_to_verify"][current_step]["link"]
-            # تحويل العضو فوراً لـ LinkedIn
             raise web.HTTPFound(target_link)
     except web.HTTPFound as redirect:
         raise redirect
@@ -52,7 +50,6 @@ def get_keyboard(user_id):
     last_3 = data["links_to_verify"]
     current_owner = last_3[current_step]["user"]
 
-    # زرار التتبع يوجه العضو لسيرفرنا الأول لفك التشفير والتسجيل
     tracking_link = f"{SERVER_URL}/redirect?u={user_id}"
 
     keyboard = [
@@ -62,7 +59,7 @@ def get_keyboard(user_id):
     return InlineKeyboardMarkup(keyboard)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("أهلاً بك! نظام التتبع الإلكتروني المباشر يعمل الآن 🚀")
+    await update.message.reply_text("أهلاً بك! نظام الفحص الآلي المباشر يعمل الآن 🚀")
 
 async def check_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.message
@@ -98,16 +95,16 @@ async def check_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "pending_link": valid_link,
             "user_name": user_name,
             "current_step": 0,
-            "has_clicked_redirect": False, # لم يضغط البوابة بعد
+            "has_clicked_redirect": False,
             "link_opened_time": 0,
             "links_to_verify": last_3_links
         }
 
         await context.bot.send_message(
             chat_id=message.chat_id,
-            text=f"✋ يا {user_name}، لن يتم نشر بوستك قبل التفاعل!\n\n"
+            text=f"✋ يا {user_name}، جاري فحص التفاعل أولاً!\n\n"
                  f"📌 **الخطوة 1 من 3:**\n"
-                 f"اضغط على الرابط بالأسفل لفتحه، ثم اعد للتأكيد بعد 10 ثوانٍ.",
+                 f"افتح الرابط وقم بعمل اللايك، ثم اضغط تأكيد ليتم فحص حسابك.",
             reply_markup=get_keyboard(user_id)
         )
 
@@ -123,25 +120,30 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_data = user_verifications[user_id]
 
     if data.startswith("verify_"):
-        # 1. كشف الكذب الأول: هل زار بوابة التتبع اصلاً؟
+        # 1. التأكد من الضغط على رابط التتبع
         if not user_data["has_clicked_redirect"]:
             await query.answer(
-                "❌ كشف غش!\n\nأنت لم تضغط على رابط البوست إطلاقاً! يجب الضغط على الرابط أولاً ليتم توجيهك.",
+                "❌ لم يتم فتح الرابط!\n\nيجب فتح الرابط والانتقال لصفحة البوست أولاً للتحقق من التفاعل.",
                 show_alert=True
             )
             return
 
-        # 2. كشف الكذب الثاني: هل مر 10 ثواني من لحظة الضغط الحقيقية على الرابط؟
+        # 2. فحص الوقت (الحد الأدنى 4 ثوانٍ)
         elapsed_time = time.time() - user_data["link_opened_time"]
-        if elapsed_time < 10:
-            left_time = 10 - int(elapsed_time)
+        if elapsed_time < 4:
+            # إعادة تصفير العداد من أول وجديد
+            user_data["link_opened_time"] = time.time()
+            
+            # رسالة حازمة بدون كشف العداد أو الثواني
             await query.answer(
-                f"⚠️ التفاعل يحتاج 10 ثوانٍ على الأقل!\n\nانتظر {left_time} ثواني أخرى.",
+                "❌ فشل فحص التفاعل!\n\n"
+                "لم يتسنى للبوت رصد إشارة اللايك (قد تكون خرجت سريعاً).\n"
+                "تم إعادة ضبط الفحص، يرجى التفاعل بشكل صحيح ثم إعادة الضغط.",
                 show_alert=True
             )
             return
 
-        # إكمال الخطوة
+        # 3. نجاح الفحص
         user_data["current_step"] += 1
         user_data["has_clicked_redirect"] = False # إعادة التصفير للبوست القادم
 
@@ -157,21 +159,20 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"🚀 **بوست جديد تم نشره!**\n\n"
                 f"👤 الناشر: {user_name}\n"
                 f"🔗 الرابط: {pending_link}\n\n"
-                f"✅ تم التحقق من زيارة الـ 3 بوستات والتفاعل معها بنجاح."
+                f"✅ تم اجتياز الفحص الآلي للتفاعل بنجاح."
             )
             del user_verifications[user_id]
         else:
             next_step = user_data["current_step"]
-            await query.answer(f"✅ تم تأكيد البوست رقم {next_step}! افتح البوست التالي.")
+            await query.answer(f"✅ تم رصد التفاعل لبوست رقم {next_step}!")
             await query.message.edit_text(
                 text=f"✋ يا {user_data['user_name']}، استمر!\n\n"
                      f"📌 **الخطوة {next_step + 1} من 3:**\n"
-                     f"اضغط لفتح الرابط التالي.",
+                     f"افتح الرابط التالي لعمل اللايك ثم اضغط تأكيد.",
                 reply_markup=get_keyboard(user_id)
             )
 
 async def main():
-    # تشغيل سيرفر التتبع
     web_app = web.Application()
     web_app.router.add_get('/redirect', handle_redirect)
     runner = web.AppRunner(web_app)
@@ -181,7 +182,6 @@ async def main():
     site = web.TCPSite(runner, '0.0.0.0', port)
     await site.start()
 
-    # تشغيل بوت تلجرام
     app = ApplicationBuilder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), check_message))
@@ -191,7 +191,6 @@ async def main():
     await app.start()
     await app.updater.start_polling()
 
-    # الإبقاء على الخدمتين شغالين
     await asyncio.Event().wait()
 
 if __name__ == '__main__':
