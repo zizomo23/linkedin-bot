@@ -26,7 +26,7 @@ async def handle_redirect(request):
             user_data = user_verifications[user_id]
             current_step = user_data["current_step"]
             
-            # تسجيل فتح اللينك وبدء العداد اللحظي
+            # تسجيل فتح اللينك ورصد الوقت
             user_data["has_clicked_redirect"] = True
             user_data["link_opened_time"] = time.time()
             
@@ -123,29 +123,29 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # 1. التأكد من الضغط على رابط التتبع
         if not user_data["has_clicked_redirect"]:
             await query.answer(
-                "❌ لم يتم فتح الرابط!\n\nيجب فتح الرابط والانتقال لصفحة البوست أولاً للتحقق من التفاعل.",
+                "❌ لم يتم فتح الرابط!\n\nيجب الضغط على زرار افتح البوست والتأكد من تحويلك للصفحة أولاً.",
                 show_alert=True
             )
             return
 
-        # 2. فحص الوقت (الحد الأدنى 4 ثوانٍ)
+        # 2. فحص الوقت (أقل من 4 ثوانٍ = تصفير كامل وإجبار على الضغط مجدداً)
         elapsed_time = time.time() - user_data["link_opened_time"]
         if elapsed_time < 4:
-            # إعادة تصفير العداد من أول وجديد
-            user_data["link_opened_time"] = time.time()
+            # إلغاء صلاحية الضغطة السابقة نهائياً
+            user_data["has_clicked_redirect"] = False
+            user_data["link_opened_time"] = 0
             
-            # رسالة حازمة بدون كشف العداد أو الثواني
             await query.answer(
                 "❌ فشل فحص التفاعل!\n\n"
-                "لم يتسنى للبوت رصد إشارة اللايك (قد تكون خرجت سريعاً).\n"
-                "تم إعادة ضبط الفحص، يرجى التفاعل بشكل صحيح ثم إعادة الضغط.",
+                "تم رصد خروج سريع قبل تسجيل اللايك على البوست.\n"
+                "تم إبطال العملية، اضغط على زر (🔗 افتح بوست) مجدداً واعمل اللايك قبل التأكيد.",
                 show_alert=True
             )
             return
 
-        # 3. نجاح الفحص
+        # 3. اجتياز الفحص بنجاح
         user_data["current_step"] += 1
-        user_data["has_clicked_redirect"] = False # إعادة التصفير للبوست القادم
+        user_data["has_clicked_redirect"] = False # تصفير للبوست التالي
 
         if user_data["current_step"] >= 3:
             pending_link = user_data["pending_link"]
