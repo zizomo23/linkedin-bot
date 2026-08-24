@@ -3,6 +3,7 @@ import asyncio
 import logging
 import re
 import time
+from datetime import date
 from aiohttp import web
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, MessageHandler, CallbackQueryHandler, filters
@@ -10,12 +11,18 @@ from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, Messa
 TOKEN = "8755292870:AAGYFk5t_MddvDfN0lgZnhsDMTQYDxJI0Ps"
 
 # الرابط الخاص بسيرفرك على Render
-SERVER_URL = "https://linkedin-bot-9v0k.onrender.com" 
+SERVER_URL = "https://my-linkedin-bot.onrender.com" 
 
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 
-recent_links = []
-user_verifications = {}
+recent_links = []             # آخر لينكات نزلت الجروب للفحص
+user_verifications = {}       # حالات الفحص الحالية
+user_daily_posts = {}         # تتبع النشر اليومي {user_id: "YYYY-MM-DD"}
+posts_queue = []              # طابور الانتظار للينكات المقبولة
+last_post_time = 0            # توقيت آخر بوست تم نشره في الجروب
+GROUP_CHAT_ID = None          # سيتم حفظ ايدي الجروب تلقائياً للنشر الآلي
+
+COOLDOWN_SECONDS = 1800       # 30 دقيقة (30 * 60)
 
 # --- سيرفر التتبع (بوابة التفتيش) ---
 async def handle_redirect(request):
@@ -26,7 +33,6 @@ async def handle_redirect(request):
             user_data = user_verifications[user_id]
             current_step = user_data["current_step"]
             
-            # تسجيل فتح اللينك ورصد الوقت
             user_data["has_clicked_redirect"] = True
             user_data["link_opened_time"] = time.time()
             
@@ -39,7 +45,6 @@ async def handle_redirect(request):
     
     return web.Response(text="رابط غير صالحة أو انتهت الجلسة", status=400)
 
-# --- لوجيك البوت والتفاعل ---
 def get_keyboard(user_id):
     data = user_verifications[user_id]
     current_step = data["current_step"]
@@ -59,16 +64,22 @@ def get_keyboard(user_id):
     return InlineKeyboardMarkup(keyboard)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("أهلاً بك! نظام الفحص الآلي المباشر يعمل الآن 🚀")
+    await update.message.reply_text("أهلاً بك! نظام الفحص وطابور النشر الآلي يعمل الآن 🚀")
 
 async def check_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global GROUP_CHAT_ID
     message = update.message
     if not message or not message.text:
         return
 
+    # حفظ ايدي الجروب لإرسال بوستات الطابور فيه تلقائياً
+    if message.chat.type in ["group", "supergroup"]:
+        GROUP_CHAT_ID = message.chat_id
+
     text = message.text
     user_id = message.from_user.id
     user_name = message.from_user.first_name
+    today_str = str(date.today())
 
     linkedin_pattern = r"(https?://[^\s]*(?:linkedin\.com|lnkd\.in)[^\s]*)"
     matches = re.findall(linkedin_pattern, text, re.IGNORECASE)
@@ -83,11 +94,33 @@ async def check_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         valid_link = matches[0]
 
-        if len(recent_links) < 3:
-            recent_links.append({"user": user_name, "link": valid_link})
-            await message.reply_text(f"✅ تم نشر لينكك يا {user_name} مباشرة (الجروب في البداية).")
+        # 1. شرط اللينك الواحد يومياً
+        if user_daily_posts.get(user_id) == today_str:
+            try:
+                await message.delete()
+            except Exception:
+                pass
+            await context.bot.send_message(
+                chat_id=message.chat_id,
+                text=f"⚠️ عذراً يا {user_name}، مسموح لك بنشر **لينك واحد فقط يومياً** للحفاظ على تفاعل الجروب.\nيمكنك النشر غداً مجدداً! 🌸"
+            )
             return
 
+        # 2. الجروب في البداية (أقل من 3 لينكات)
+        if len(recent_links) < 3:
+            try:
+                await message.delete()
+            except Exception:
+                pass
+            recent_links.append({"user": user_name, "link": valid_link})
+            user_daily_posts[user_id] = today_str
+            await context.bot.send_message(
+                chat_id=message.chat_id,
+                text=f"🚀 **بوست جديد تم نشره!**\n\n👤 الناشر: {user_name}\n🔗 الرابط: {valid_link}"
+            )
+            return
+
+        # 3. بدء عملية التحقق
         await message.delete()
         last_3_links = recent_links[-3:]
 
@@ -97,7 +130,8 @@ async def check_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "current_step": 0,
             "has_clicked_redirect": False,
             "link_opened_time": 0,
-            "links_to_verify": last_3_links
+            "links_to_verify": last_3_links,
+            "chat_id": message.chat_id
         }
 
         await context.bot.send_message(
@@ -109,6 +143,7 @@ async def check_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global last_post_time
     query = update.callback_query
     user_id = query.from_user.id
     data = query.data
@@ -120,7 +155,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_data = user_verifications[user_id]
 
     if data.startswith("verify_"):
-        # 1. التأكد من الضغط على رابط التتبع
         if not user_data["has_clicked_redirect"]:
             await query.answer(
                 "❌ لم يتم فتح الرابط!\n\nيجب الضغط على زرار افتح البوست والتأكد من تحويلك للصفحة أولاً.",
@@ -128,10 +162,9 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
 
-        # 2. فحص الوقت (أقل من 4 ثوانٍ = تصفير كامل وإجبار على الضغط مجدداً)
         elapsed_time = time.time() - user_data["link_opened_time"]
         if elapsed_time < 4:
-            # إلغاء صلاحية الضغطة السابقة نهائياً
+            # تصفير وإجبار على الضغط مجدداً
             user_data["has_clicked_redirect"] = False
             user_data["link_opened_time"] = 0
             
@@ -143,24 +176,49 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
 
-        # 3. اجتياز الفحص بنجاح
         user_data["current_step"] += 1
-        user_data["has_clicked_redirect"] = False # تصفير للبوست التالي
+        user_data["has_clicked_redirect"] = False
 
         if user_data["current_step"] >= 3:
             pending_link = user_data["pending_link"]
             user_name = user_data["user_name"]
+            today_str = str(date.today())
 
-            recent_links.append({"user": user_name, "link": pending_link})
-            if len(recent_links) > 15:
-                recent_links.pop(0)
+            # تسجيل استهلاك الفرصة اليومية
+            user_daily_posts[user_id] = today_str
 
-            await query.message.edit_text(
-                f"🚀 **بوست جديد تم نشره!**\n\n"
-                f"👤 الناشر: {user_name}\n"
-                f"🔗 الرابط: {pending_link}\n\n"
-                f"✅ تم اجتياز الفحص الآلي للتفاعل بنجاح."
-            )
+            now = time.time()
+            time_since_last = now - last_post_time
+
+            # لو الـ 30 دقيقة مرت، والطابور فاضي -> انشر فوراً
+            if time_since_last >= COOLDOWN_SECONDS and len(posts_queue) == 0:
+                last_post_time = now
+                recent_links.append({"user": user_name, "link": pending_link})
+                if len(recent_links) > 15:
+                    recent_links.pop(0)
+
+                await query.message.edit_text(
+                    f"🚀 **بوست جديد تم نشره!**\n\n"
+                    f"👤 الناشر: {user_name}\n"
+                    f"🔗 الرابط: {pending_link}\n\n"
+                    f"✅ تم اجتياز الفحص الآلي والتفاعل بنجاح."
+                )
+            else:
+                # إضافة البوست للـ Queue (الطابور)
+                posts_queue.append({"user": user_name, "link": pending_link, "user_id": user_id})
+                queue_position = len(posts_queue)
+                
+                # حساب الوقت التقريبي للنشر
+                wait_time_seconds = (COOLDOWN_SECONDS - time_since_last) + ((queue_position - 1) * COOLDOWN_SECONDS)
+                wait_minutes = int(wait_time_seconds // 60)
+
+                await query.message.edit_text(
+                    f"✅ **تم اجتياز التفاعل بنجاح يا {user_name}!**\n\n"
+                    f"📋 **حالة الطابور:**\n"
+                    f"بوستك الآن رقم **({queue_position})** في طابور النشر.\n"
+                    f"⏱️ وسيتم نشره تلقائياً في الجروب بعد حوالي **{wait_minutes} دقيقة** لضمان أعلى نسبة تفاعل ومقاهدة."
+                )
+
             del user_verifications[user_id]
         else:
             next_step = user_data["current_step"]
@@ -171,6 +229,32 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                      f"افتح الرابط التالي لعمل اللايك ثم اضغط تأكيد.",
                 reply_markup=get_keyboard(user_id)
             )
+
+# --- محرك الطابور الآلي (شغال في الخلفية كل دقيقة) ---
+async def queue_dispatcher(app):
+    global last_post_time
+    while True:
+        await asyncio.sleep(30) # فحص كل 30 ثانية
+        now = time.time()
+        
+        if posts_queue and (now - last_post_time >= COOLDOWN_SECONDS) and GROUP_CHAT_ID:
+            next_post = posts_queue.pop(0)
+            last_post_time = now
+
+            recent_links.append({"user": next_post["user"], "link": next_post["link"]})
+            if len(recent_links) > 15:
+                recent_links.pop(0)
+
+            try:
+                await app.bot.send_message(
+                    chat_id=GROUP_CHAT_ID,
+                    text=f"📢 **دور النشر وصل من الطابور!**\n\n"
+                         f"👤 الناشر: {next_post['user']}\n"
+                         f"🔗 الرابط: {next_post['link']}\n\n"
+                         f"💡 التفاعل متاح الآن، استغلوا الفاصل الزمني!"
+                )
+            except Exception as e:
+                logging.error(f"خطأ في إرسال بوست الطابور: {e}")
 
 async def main():
     web_app = web.Application()
@@ -191,6 +275,13 @@ async def main():
     await app.start()
     await app.updater.start_polling()
 
+    # تشغيل محرك الطابور في الخلفية
+    asyncio.create_task(queue_dispatcher(app))
+
+    await asyncio.Event().wait()
+
+if __name__ == '__main__':
+    asyncio.run(main())
     await asyncio.Event().wait()
 
 if __name__ == '__main__':
