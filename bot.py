@@ -11,7 +11,7 @@ from telegram.error import Forbidden
 TOKEN = "8755292870:AAGYFk5t_MddvDfN0lgZnhsDMTQYDxJI0Ps"
 
 # الرابط الخاص بسيرفرك على Render
-SERVER_URL = "https://my-linkedin-bot.onrender.com" 
+SERVER_URL = "https://linkedin-bot-9v0k.onrender.com" 
 
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 
