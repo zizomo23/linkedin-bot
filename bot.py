@@ -11,19 +11,40 @@ from telegram.error import Forbidden
 TOKEN = "8755292870:AAGYFk5t_MddvDfN0lgZnhsDMTQYDxJI0Ps"
 
 # الرابط الخاص بسيرفرك على Render
-SERVER_URL = "https://linkedin-bot-9v0k.onrender.com" 
+SERVER_URL = "https://my-linkedin-bot.onrender.com" 
 
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 
-# --- قاعدة البيانات اللحظية (في الـ RAM لسرعة الاختبار) ---
+# --- قاعدة البيانات اللحظية ---
 active_posts = []           # قائمة كل البوستات المنشورة [{"id": 1, "user": "Ali", "user_id": 123, "link": "https://..."}]
 user_interactions = {}      # سجل تفاعلات كل عضو {user_id: set(post_ids_completed)}
-user_verifications = {}      # حالات الفحص الحالية
+user_verifications = {}      # حالات الفحص الحالية بالخاص
 
 GROUP_CHAT_ID = None        # ايدي الجروب
 BOT_USERNAME = None         # يوزر نيم البوت
 
-# --- سيرفر التتبع (بوابة التفتيش) ---
+# --- دالة مساعدة لنشر البوست في الجروب مع أزرار التفاعل المباشر ---
+async def publish_post_to_group(context: ContextTypes.DEFAULT_TYPE, post_id: int, user_name: str, link: str):
+    if not GROUP_CHAT_ID:
+        return
+
+    keyboard = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("🔗 1. افتح البوست", url=link),
+            InlineKeyboardButton("✅ 2. سجّل تفاعلي", callback_data=f"gverify_{post_id}")
+        ]
+    ])
+
+    await context.bot.send_message(
+        chat_id=GROUP_CHAT_ID,
+        text=f"🚀 **بوست جديد تم نشره!**\n\n"
+             f"👤 الناشر: {user_name}\n"
+             f"🔗 الرابط: {link}\n\n"
+             f"💡 *افتح البوست واعمل اللايك، ثم اضغط (سجّل تفاعلي) ليتم خصمه من ديونك فوراً!*",
+        reply_markup=keyboard
+    )
+
+# --- سيرفر التتبع (بوابة التفتيش بالخاص) ---
 async def handle_redirect(request):
     try:
         user_id = int(request.query.get("u", 0))
@@ -45,7 +66,6 @@ async def handle_redirect(request):
     
     return web.Response(text="رابط غير صالح أو انتهت الجلسة", status=400)
 
-# دوال مساعدة لبناء الأزرار
 def get_verification_keyboard(user_id):
     data = user_verifications[user_id]
     current_index = data["current_index"]
@@ -63,7 +83,6 @@ def get_verification_keyboard(user_id):
     ]
     return InlineKeyboardMarkup(keyboard)
 
-# إرسال خطوة الفحص للعضو في الخاص
 async def send_verification_step(context: ContextTypes.DEFAULT_TYPE, user_id: int):
     data = user_verifications[user_id]
     current_index = data["current_index"]
@@ -82,7 +101,6 @@ async def send_verification_step(context: ContextTypes.DEFAULT_TYPE, user_id: in
         reply_markup=get_verification_keyboard(user_id)
     )
 
-# أمر /start
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     user_name = update.effective_user.first_name
@@ -93,10 +111,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             f"أهلاً بك يا {user_name}! 👋\n"
             "أنا بوت تنظيم تفاعل LinkedIn.\n"
-            "عند إرسال أي رابط في الجروب، سأتحقق من تفاعلك مع جميع البوستات السابقة ونشر رابطك فوراً! 🚀"
+            "يمكنك التفاعل مع البوستات مباشرة في الجروب بالضغط على (سجّل تفاعلي) لخصمها من ديونك تلقائياً! 🚀"
         )
 
-# استقبال الرسائل في الجروب
 async def check_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global GROUP_CHAT_ID, BOT_USERNAME
     message = update.message
@@ -125,7 +142,6 @@ async def check_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         valid_link = matches[0]
 
-        # مسح رسالة العضو فوراً ليبقى الجروب نظيفاً
         try:
             await message.delete()
         except Exception:
@@ -138,7 +154,7 @@ async def check_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if p["user_id"] != user_id and p["id"] not in completed_set
         ]
 
-        # --- الحالة الأولى: العضو متفاعل مع كل حاجة (معندوش ديون) ---
+        # --- الحالة الأولى: العضو متفاعل مع الجميع (معندوش ديون) ---
         if len(uninteracted_posts) == 0:
             new_post_id = len(active_posts) + 1
             new_post = {
@@ -149,11 +165,8 @@ async def check_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             }
             active_posts.append(new_post)
 
-            # نشر البوست في الجروب فوراً
-            await context.bot.send_message(
-                chat_id=message.chat_id,
-                text=f"🚀 **بوست جديد تم نشره!**\n\n👤 الناشر: {user_name}\n🔗 الرابط: {valid_link}"
-            )
+            # نشر البوست فوراً في الجروب مع أزرار التفاعل
+            await publish_post_to_group(context, new_post_id, user_name, valid_link)
 
             # إشعار العضو في الخاص
             try:
@@ -165,7 +178,7 @@ async def check_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 pass
             return
 
-        # --- الحالة الثانية: العضو عنده ديون تفاعل ---
+        # --- الحالة الثانية: العضو عنده ديون تفاعل معلقة ---
         user_verifications[user_id] = {
             "pending_link": valid_link,
             "user_name": user_name,
@@ -175,11 +188,9 @@ async def check_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "link_opened_time": 0
         }
 
-        # المحاولة الأولى: الإرسال للخاص مباشرة
         try:
             await send_verification_step(context, user_id)
         except Forbidden:
-            # لو العضو ما داسش Start للبوت قبل كدة، تلجرام بيرفض.. فنبعتله زرار مؤقت في الجروب يدخله الخاص
             btn = InlineKeyboardMarkup([[
                 InlineKeyboardButton("📩 اضغط هنا لبدء الفحص بالخاص", url=f"https://t.me/{BOT_USERNAME}?start=verify")
             ]])
@@ -194,12 +205,45 @@ async def check_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except Exception:
                 pass
 
-# معالجة أزرار التأكيد في الخاص
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     user_id = query.from_user.id
     data = query.data
 
+    # ========================================================
+    # 1️⃣ زرار التسجيل المباشر من الجروب (Group Interaction)
+    # ========================================================
+    if data.startswith("gverify_"):
+        post_id = int(data.split("_")[1])
+        target_post = next((p for p in active_posts if p["id"] == post_id), None)
+
+        if not target_post:
+            await query.answer("⚠️ البوست غير موجود أو قديم جداً.", show_alert=True)
+            return
+
+        if target_post["user_id"] == user_id:
+            await query.answer("😊 ده بوستك أنت يا بطل! مش محتاج تسجل تفاعلك معاه.", show_alert=True)
+            return
+
+        if user_id not in user_interactions:
+            user_interactions[user_id] = set()
+
+        if post_id in user_interactions[user_id]:
+            await query.answer("⚠️ أنت بالفعل مسجّل تفاعلك مع البوست ده قبل كدا!", show_alert=True)
+            return
+
+        # تسجيل التفاعل في السجل
+        user_interactions[user_id].add(post_id)
+        await query.answer(
+            f"✅ تم تسجيل تفاعلك مع بوست {target_post['user']} بنجاح! 👏\n\n"
+            f"اتخصم البوست ده من ديونك، ولما تنزل بوستك هينزل أسرع وبدون ما يطلب منك تفاعل معاه تاني!",
+            show_alert=True
+        )
+        return
+
+    # ========================================================
+    # 2️⃣ خطوات الفحص بالخاص (المستحقات المعلقة)
+    # ========================================================
     if user_id not in user_verifications:
         await query.answer("⚠️ ليس لديك عملية فحص معلقة حالياً.", show_alert=True)
         return
@@ -210,7 +254,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     current_post = uninteracted[current_index]
 
     if data.startswith("verify_"):
-        # 1. التأكد من فتح الرابط
         if not user_data["has_clicked_redirect"]:
             await query.answer(
                 "❌ لم يتم فتح الرابط!\n\nيجب الضغط على زرار (🔗 افتح بوست) والتأكد من تحويلك للصفحة أولاً.",
@@ -218,7 +261,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
 
-        # 2. التأكد من قضاء 4 ثوانٍ على الأقل
         elapsed_time = time.time() - user_data["link_opened_time"]
         if elapsed_time < 4:
             user_data["has_clicked_redirect"] = False
@@ -232,7 +274,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
 
-        # تسجيل البوست كـ "مكتمل التفاعل" للعضو
+        # تسجيل البوست كـ "مكتمل التفاعل"
         if user_id not in user_interactions:
             user_interactions[user_id] = set()
         user_interactions[user_id].add(current_post["id"])
@@ -240,12 +282,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_data["current_index"] += 1
         user_data["has_clicked_redirect"] = False
 
-        # لو خلص كل البوستات المتبقية عليه
         if user_data["current_index"] >= len(uninteracted):
             pending_link = user_data["pending_link"]
             user_name = user_data["user_name"]
 
-            # إضافة بوست العضو للقائمة العامة
             new_post_id = len(active_posts) + 1
             active_posts.append({
                 "id": new_post_id,
@@ -254,12 +294,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "link": pending_link
             })
 
-            # نشر البوست فوراً في الجروب
-            if GROUP_CHAT_ID:
-                await context.bot.send_message(
-                    chat_id=GROUP_CHAT_ID,
-                    text=f"🚀 **بوست جديد تم نشره!**\n\n👤 الناشر: {user_name}\n🔗 الرابط: {pending_link}"
-                )
+            # نشر البوست في الجروب فوراً
+            await publish_post_to_group(context, new_post_id, user_name, pending_link)
 
             # رسالة النجاح في الخاص
             await query.message.edit_text(
@@ -269,7 +305,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             del user_verifications[user_id]
         else:
-            # الانتقال للبوست التالي
             next_index = user_data["current_index"]
             await query.answer(f"✅ تم تأكيد التفاعل للبوست ({next_index} من {len(uninteracted)})!")
             
