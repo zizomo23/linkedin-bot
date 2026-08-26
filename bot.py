@@ -13,17 +13,20 @@ TOKEN = "8755292870:AAGYFk5t_MddvDfN0lgZnhsDMTQYDxJI0Ps"
 # الرابط الخاص بسيرفرك على Render
 SERVER_URL = "https://linkedin-bot-9v0k.onrender.com" 
 
+# مدة صلاحية البوستات الحسابية (7 أيام بالثواني) = 7 * 24 * 60 * 60
+WEEK_IN_SECONDS = 7 * 24 * 3600
+
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 
 # --- قاعدة البيانات اللحظية ---
-active_posts = []           # قائمة كل البوستات المنشورة [{"id": 1, "user": "Ali", "user_id": 123, "link": "https://..."}]
+active_posts = []           # قائمة البوستات [{"id": 1, "user": "Ali", "user_id": 123, "link": "https://...", "timestamp": 1700000000}]
 user_interactions = {}      # سجل تفاعلات كل عضو {user_id: set(post_ids_completed)}
 user_verifications = {}      # حالات الفحص الحالية بالخاص
 
 GROUP_CHAT_ID = None        # ايدي الجروب
 BOT_USERNAME = None         # يوزر نيم البوت
 
-# --- دالة مساعدة لنشر البوست في الجروب مع أزرار التفاعل المباشر ---
+# --- دالة نشر البوست في الجروب مع التنبيه المشدد والأزرار الحصرية ---
 async def publish_post_to_group(context: ContextTypes.DEFAULT_TYPE, post_id: int, user_name: str, link: str):
     if not GROUP_CHAT_ID:
         return
@@ -38,10 +41,14 @@ async def publish_post_to_group(context: ContextTypes.DEFAULT_TYPE, post_id: int
     await context.bot.send_message(
         chat_id=GROUP_CHAT_ID,
         text=f"🚀 **بوست جديد تم نشره!**\n\n"
-             f"👤 الناشر: {user_name}\n"
-             f"🔗 الرابط: {link}\n\n"
-             f"💡 *افتح البوست واعمل اللايك، ثم اضغط (سجّل تفاعلي) ليتم خصمه من ديونك فوراً!*",
-        reply_markup=keyboard
+             f"👤 الناشر: **{user_name}**\n\n"
+             f"🚨 **تنبيه هام جداً (لتسجيل تفاعلك ولعدم الظلم):**\n"
+             f"تفاعل مع البوست عن طريق **الأزرار بالأسفل حصراً** ⤵️\n\n"
+             f"1️⃣ اضغط على `[ 🔗 1. افتح البوست ]` واعمل اللايك.\n"
+             f"2️⃣ ارجع واضغط على `[ ✅ 2. سجّل تفاعلي ]` فوراً.\n\n"
+             f"⚠️ *عدم الضغط على زر (سجّل تفاعلي) يعني عدم تسجيل تفاعلك في السيستم وسيطالبك البوت بهذا البوست لاحقاً بالخاص!*",
+        reply_markup=keyboard,
+        parse_mode="Markdown"
     )
 
 # --- سيرفر التتبع (بوابة التفتيش بالخاص) ---
@@ -147,38 +154,42 @@ async def check_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception:
             pass
 
-        # حساب البوستات التي لم يتفاعل معها العضو بعد
+        now = time.time()
         completed_set = user_interactions.get(user_id, set())
+
+        # تصفية البوستات: فقط البوستات خلال آخر 7 أيام وميش بتاعته ولم يتفاعل معها بعد
         uninteracted_posts = [
             p for p in active_posts 
-            if p["user_id"] != user_id and p["id"] not in completed_set
+            if p["user_id"] != user_id 
+            and p["id"] not in completed_set
+            and (now - p.get("timestamp", 0)) <= WEEK_IN_SECONDS
         ]
 
-        # --- الحالة الأولى: العضو متفاعل مع الجميع (معندوش ديون) ---
+        # --- الحالة الأولى: العضو متفاعل مع جميع البوستات المطلوبة ---
         if len(uninteracted_posts) == 0:
             new_post_id = len(active_posts) + 1
             new_post = {
                 "id": new_post_id,
                 "user": user_name,
                 "user_id": user_id,
-                "link": valid_link
+                "link": valid_link,
+                "timestamp": now
             }
             active_posts.append(new_post)
 
-            # نشر البوست فوراً في الجروب مع أزرار التفاعل
+            # نشر البوست فوراً في الجروب
             await publish_post_to_group(context, new_post_id, user_name, valid_link)
 
-            # إشعار العضو في الخاص
             try:
                 await context.bot.send_message(
                     chat_id=user_id,
-                    text=f"🎉 **عاش يا {user_name}!** لأنك متفاعل مع جميع البوستات السابقة، تم نشر بوستك فوراً في الجروب! 🚀"
+                    text=f"🎉 **عاش يا {user_name}!** لأنك متفاعل مع جميع البوستات المطلوبة، تم نشر بوستك فوراً في الجروب! 🚀"
                 )
             except Forbidden:
                 pass
             return
 
-        # --- الحالة الثانية: العضو عنده ديون تفاعل معلقة ---
+        # --- الحالة الثانية: العضو عليه ديون تفاعل معلقة ---
         user_verifications[user_id] = {
             "pending_link": valid_link,
             "user_name": user_name,
@@ -210,9 +221,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = query.from_user.id
     data = query.data
 
-    # ========================================================
-    # 1️⃣ زرار التسجيل المباشر من الجروب (Group Interaction)
-    # ========================================================
+    # 1️⃣ تسجيل التفاعل المباشر من الجروب
     if data.startswith("gverify_"):
         post_id = int(data.split("_")[1])
         target_post = next((p for p in active_posts if p["id"] == post_id), None)
@@ -232,18 +241,15 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.answer("⚠️ أنت بالفعل مسجّل تفاعلك مع البوست ده قبل كدا!", show_alert=True)
             return
 
-        # تسجيل التفاعل في السجل
         user_interactions[user_id].add(post_id)
         await query.answer(
             f"✅ تم تسجيل تفاعلك مع بوست {target_post['user']} بنجاح! 👏\n\n"
-            f"اتخصم البوست ده من ديونك، ولما تنزل بوستك هينزل أسرع وبدون ما يطلب منك تفاعل معاه تاني!",
+            f"اتخصم البوست ده من ديونك، ولما تنزل بوستك هينزل أسرع بدون مشاكل!",
             show_alert=True
         )
         return
 
-    # ========================================================
-    # 2️⃣ خطوات الفحص بالخاص (المستحقات المعلقة)
-    # ========================================================
+    # 2️⃣ خطوات الفحص بالخاص
     if user_id not in user_verifications:
         await query.answer("⚠️ ليس لديك عملية فحص معلقة حالياً.", show_alert=True)
         return
@@ -274,7 +280,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
 
-        # تسجيل البوست كـ "مكتمل التفاعل"
         if user_id not in user_interactions:
             user_interactions[user_id] = set()
         user_interactions[user_id].add(current_post["id"])
@@ -285,22 +290,22 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if user_data["current_index"] >= len(uninteracted):
             pending_link = user_data["pending_link"]
             user_name = user_data["user_name"]
+            now = time.time()
 
             new_post_id = len(active_posts) + 1
             active_posts.append({
                 "id": new_post_id,
                 "user": user_name,
                 "user_id": user_id,
-                "link": pending_link
+                "link": pending_link,
+                "timestamp": now
             })
 
-            # نشر البوست في الجروب فوراً
             await publish_post_to_group(context, new_post_id, user_name, pending_link)
 
-            # رسالة النجاح في الخاص
             await query.message.edit_text(
                 f"🎉 **تم بنجاح يا {user_name}!**\n\n"
-                f"✅ اجتزت فحص جميع البوستات السابقة، وتم نشر بوستك الآن فوراً في الجروب! 🚀"
+                f"✅ اجتزت فحص جميع البوستات المطلوبة، وتم نشر بوستك الآن فوراً في الجروب! 🚀"
             )
 
             del user_verifications[user_id]
