@@ -13,8 +13,9 @@ TOKEN = "8755292870:AAGYFk5t_MddvDfN0lgZnhsDMTQYDxJI0Ps"
 # الرابط الخاص بسيرفرك على Render
 SERVER_URL = "https://linkedin-bot-9v0k.onrender.com" 
 
-# مدة صلاحية البوستات الحسابية (7 أيام بالثواني)
-WEEK_IN_SECONDS = 7 * 24 * 3600
+# الثوابت الزمنية
+DAY_IN_SECONDS = 24 * 3600      # 24 ساعة بالثواني (حد النشر اليومي)
+WEEK_IN_SECONDS = 7 * 24 * 3600 # 7 أيام بالثواني (مدة صلاحية الديون)
 
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 
@@ -26,7 +27,7 @@ user_verifications = {}      # حالات الفحص الحالية بالخاص
 GROUP_CHAT_ID = None        # ايدي الجروب
 BOT_USERNAME = None         # يوزر نيم البوت
 
-# --- 1️⃣ دالة نشر البوست في الجروب (بدون إظهار اللينك في النص) ---
+# --- 1️⃣ دالة نشر البوست في الجروب ---
 async def publish_post_to_group(context: ContextTypes.DEFAULT_TYPE, post_id: int, user_name: str, link: str):
     if not GROUP_CHAT_ID:
         return
@@ -122,25 +123,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "يمكنك التفاعل مع البوستات مباشرة في الجروب بالضغط على (سجّل تفاعلي) لخصمها من ديونك تلقائياً! 🚀"
         )
 
-# --- 🆕 أمر إعادة الضبط للتجربة من الصفر ---
-async def reset_me(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    global active_posts
-    
-    # مسح حالة الفحص بالخاص والديون
-    if user_id in user_verifications:
-        del user_verifications[user_id]
-    if user_id in user_interactions:
-        del user_interactions[user_id]
-        
-    # مسح جميع البوستات الخاصة بالعضو من قائمة البوستات
-    active_posts = [p for p in active_posts if p["user_id"] != user_id]
-    
-    await update.message.reply_text(
-        "🔄 **تم مسح جميع بياناتك وبوستاتك بنجاح!**\n\n"
-        "البوت حالياً يتعامل معك كأنك شخص جديد تماماً لم ينشر أو يتفاعل من قبل. يمكنك البدء بالتجربة الآن!"
-    )
-
 # --- 4️⃣ معالجة الرسائل والروابط في الجروب ---
 async def check_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global GROUP_CHAT_ID, BOT_USERNAME
@@ -169,16 +151,56 @@ async def check_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         valid_link = matches[0]
+        now = time.time()
 
+        # ========================================================
+        # 🔒 فحص الحد اليومي (بوست واحد كل 24 ساعة)
+        # ========================================================
+        user_posts = [p for p in active_posts if p["user_id"] == user_id]
+        if user_posts:
+            last_post = max(user_posts, key=lambda x: x["timestamp"])
+            time_passed = now - last_post["timestamp"]
+
+            if time_passed < DAY_IN_SECONDS:
+                remaining_seconds = DAY_IN_SECONDS - time_passed
+                hours = int(remaining_seconds // 3600)
+                minutes = int((remaining_seconds % 3600) // 60)
+
+                try:
+                    await message.delete()
+                except Exception:
+                    pass
+
+                time_msg = f"⏳ **المتبقي لتتمكن من النشر مجدداً:** {hours} ساعة و {minutes} دقيقة."
+
+                try:
+                    await context.bot.send_message(
+                        chat_id=user_id,
+                        text=f"⚠️ **عذراً يا {user_name}!**\n"
+                             f"يُسمح بنشر **بوست واحد فقط كل 24 ساعة**.\n\n"
+                             f"{time_msg}"
+                    )
+                except Forbidden:
+                    temp_msg = await context.bot.send_message(
+                        chat_id=message.chat_id,
+                        text=f"⚠️ يا {user_name}، يُسمح بنشر بوست واحد فقط كل 24 ساعة!\n{time_msg}"
+                    )
+                    await asyncio.sleep(15)
+                    try:
+                        await temp_msg.delete()
+                    except Exception:
+                        pass
+                return
+
+        # مسح الرسالة الأصلية من الجروب لبدء الإجراءات
         try:
             await message.delete()
         except Exception:
             pass
 
-        now = time.time()
         completed_set = user_interactions.get(user_id, set())
 
-        # حساب الديون: البوستات في آخر 7 أيام وميش بتاعته ولم يتفاعل معها بعد
+        # حساب الديون: البوستات في آخر 7 أيام وليست بتاعته ولم يتفاعل معها بعد
         uninteracted_posts = [
             p for p in active_posts 
             if p["user_id"] != user_id 
@@ -365,9 +387,7 @@ async def main():
 
     app = ApplicationBuilder().token(TOKEN).build()
     
-    # تسجيل الأوامر والهاندلرات
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("reset", reset_me))  # أمر التصفير
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), check_message))
     app.add_handler(CallbackQueryHandler(button_handler))
 
