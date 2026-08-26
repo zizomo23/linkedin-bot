@@ -13,7 +13,7 @@ TOKEN = "8755292870:AAGYFk5t_MddvDfN0lgZnhsDMTQYDxJI0Ps"
 # الرابط الخاص بسيرفرك على Render
 SERVER_URL = "https://linkedin-bot-9v0k.onrender.com" 
 
-# مدة صلاحية البوستات الحسابية (7 أيام بالثواني) = 7 * 24 * 60 * 60
+# مدة صلاحية البوستات الحسابية (7 أيام بالثواني)
 WEEK_IN_SECONDS = 7 * 24 * 3600
 
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
@@ -26,7 +26,7 @@ user_verifications = {}      # حالات الفحص الحالية بالخاص
 GROUP_CHAT_ID = None        # ايدي الجروب
 BOT_USERNAME = None         # يوزر نيم البوت
 
-# --- دالة نشر البوست في الجروب مع التنبيه المشدد والأزرار الحصرية ---
+# --- 1️⃣ دالة نشر البوست في الجروب (بدون إظهار اللينك في النص) ---
 async def publish_post_to_group(context: ContextTypes.DEFAULT_TYPE, post_id: int, user_name: str, link: str):
     if not GROUP_CHAT_ID:
         return
@@ -42,15 +42,16 @@ async def publish_post_to_group(context: ContextTypes.DEFAULT_TYPE, post_id: int
         chat_id=GROUP_CHAT_ID,
         text=f"🚀 **بوست جديد تم نشره!**\n\n"
              f"👤 الناشر: **{user_name}**\n\n"
-             f"🚨 **تنبيه هام جداً (لتسجيل تفاعلك ):**\n"
+             f"🚨 **تنبيه هام جداً (لتسجيل تفاعلك ولعدم الظلم):**\n"
              f"تفاعل مع البوست عن طريق **الأزرار بالأسفل حصراً** ⤵️\n\n"
              f"1️⃣ اضغط على `[ 🔗 1. افتح البوست ]` واعمل اللايك.\n"
-             f"2️⃣ ارجع واضغط على `[ ✅ 2. سجّل تفاعلي ]` فوراً.\n\n",
+             f"2️⃣ ارجع واضغط على `[ ✅ 2. سجّل تفاعلي ]` فوراً.\n\n"
+             f"⚠️ *عدم الضغط على زر (سجّل تفاعلي) يعني عدم تسجيل تفاعلك في السيستم وسيطالبك البوت بهذا البوست لاحقاً بالخاص!*",
         reply_markup=keyboard,
         parse_mode="Markdown"
     )
 
-# --- سيرفر التتبع (بوابة التفتيش بالخاص) ---
+# --- 2️⃣ سيرفر التتبع والتحويل المباشر ---
 async def handle_redirect(request):
     try:
         user_id = int(request.query.get("u", 0))
@@ -107,6 +108,7 @@ async def send_verification_step(context: ContextTypes.DEFAULT_TYPE, user_id: in
         reply_markup=get_verification_keyboard(user_id)
     )
 
+# --- 3️⃣ الأوامر العامة ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     user_name = update.effective_user.first_name
@@ -120,6 +122,26 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "يمكنك التفاعل مع البوستات مباشرة في الجروب بالضغط على (سجّل تفاعلي) لخصمها من ديونك تلقائياً! 🚀"
         )
 
+# --- 🆕 أمر إعادة الضبط للتجربة من الصفر ---
+async def reset_me(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    global active_posts
+    
+    # مسح حالة الفحص بالخاص والديون
+    if user_id in user_verifications:
+        del user_verifications[user_id]
+    if user_id in user_interactions:
+        del user_interactions[user_id]
+        
+    # مسح جميع البوستات الخاصة بالعضو من قائمة البوستات
+    active_posts = [p for p in active_posts if p["user_id"] != user_id]
+    
+    await update.message.reply_text(
+        "🔄 **تم مسح جميع بياناتك وبوستاتك بنجاح!**\n\n"
+        "البوت حالياً يتعامل معك كأنك شخص جديد تماماً لم ينشر أو يتفاعل من قبل. يمكنك البدء بالتجربة الآن!"
+    )
+
+# --- 4️⃣ معالجة الرسائل والروابط في الجروب ---
 async def check_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global GROUP_CHAT_ID, BOT_USERNAME
     message = update.message
@@ -156,7 +178,7 @@ async def check_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         now = time.time()
         completed_set = user_interactions.get(user_id, set())
 
-        # تصفية البوستات: فقط البوستات خلال آخر 7 أيام وميش بتاعته ولم يتفاعل معها بعد
+        # حساب الديون: البوستات في آخر 7 أيام وميش بتاعته ولم يتفاعل معها بعد
         uninteracted_posts = [
             p for p in active_posts 
             if p["user_id"] != user_id 
@@ -164,7 +186,7 @@ async def check_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             and (now - p.get("timestamp", 0)) <= WEEK_IN_SECONDS
         ]
 
-        # --- الحالة الأولى: العضو متفاعل مع جميع البوستات المطلوبة ---
+        # --- الحالة الأولى: معندوش ديون معلقة ---
         if len(uninteracted_posts) == 0:
             new_post_id = len(active_posts) + 1
             new_post = {
@@ -188,7 +210,7 @@ async def check_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 pass
             return
 
-        # --- الحالة الثانية: العضو عليه ديون تفاعل معلقة ---
+        # --- الحالة الثانية: عنده ديون معلقة ---
         user_verifications[user_id] = {
             "pending_link": valid_link,
             "user_name": user_name,
@@ -215,12 +237,13 @@ async def check_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except Exception:
                 pass
 
+# --- 5️⃣ معالجة الأزرار ---
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     user_id = query.from_user.id
     data = query.data
 
-    # 1️⃣ تسجيل التفاعل المباشر من الجروب
+    # 1. زر التسجيل المباشر من الجروب
     if data.startswith("gverify_"):
         post_id = int(data.split("_")[1])
         target_post = next((p for p in active_posts if p["id"] == post_id), None)
@@ -248,7 +271,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # 2️⃣ خطوات الفحص بالخاص
+    # 2. خطوات الفحص بالخاص
     if user_id not in user_verifications:
         await query.answer("⚠️ ليس لديك عملية فحص معلقة حالياً.", show_alert=True)
         return
@@ -329,6 +352,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 reply_markup=keyboard
             )
 
+# --- 6️⃣ دالة التشغيل الرئيسية ---
 async def main():
     web_app = web.Application()
     web_app.router.add_get('/redirect', handle_redirect)
@@ -340,7 +364,10 @@ async def main():
     await site.start()
 
     app = ApplicationBuilder().token(TOKEN).build()
+    
+    # تسجيل الأوامر والهاندلرات
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("reset", reset_me))  # أمر التصفير
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), check_message))
     app.add_handler(CallbackQueryHandler(button_handler))
 
