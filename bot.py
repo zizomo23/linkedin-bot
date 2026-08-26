@@ -16,7 +16,7 @@ TOKEN = "8755292870:AAGYFk5t_MddvDfN0lgZnhsDMTQYDxJI0Ps"
 SERVER_URL = "https://linkedin-bot-9v0k.onrender.com" 
 
 # 🖼️ رابط الصورة التوضيحية التي تظهر للجدد (يمكنك تغييره برابط صورتك)
-START_IMAGE_URL = "https://i.imgur.com/example.jpg" 
+START_IMAGE_URL = "https://drive.google.com/file/d/10tC2BkOG_XmA8biSxhxt56h0DYX_w_36/view?usp=sharing" 
 
 # 📝 نص الشرح والترحيب بالعضو الجديد (صيغة HTML)
 START_TEXT = (
