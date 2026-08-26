@@ -13,6 +13,20 @@ TOKEN = "8755292870:AAGYFk5t_MddvDfN0lgZnhsDMTQYDxJI0Ps"
 # الرابط الخاص بسيرفرك على Render
 SERVER_URL = "https://linkedin-bot-9v0k.onrender.com" 
 
+# 🖼️ رابط الصورة التوضيحية التي تظهر للجدد (ضع رابط صورتك هنا)
+START_IMAGE_URL = "https://i.imgur.com/example.jpg" 
+
+# 📝 نص الشرح والترحيب بالعضو الجديد
+START_TEXT = (
+    "👋 **أهلاً بك في بوت تنظيم تفاعل LinkedIn!**\n\n"
+    "📌 **كيف يعمل البوت؟**\n\n"
+    "1️⃣ **النشر في الجروب:** أرسل رابط بوستك في الجروب بشكل طبيعي.\n"
+    "2️⃣ **فحص الديون:** إذا كان عليك بوستات سابقة لم تتفاعل معها، سيطلب منك البوت التفاعل معها أولاً بالخاص.\n"
+    "3️⃣ **التسجيل السريع:** يمكنك التفاعل مع أي بوست ينزل في الجروب بالضغط على زر `[ ✅ 2. سجّل تفاعلي ]` لخصمه من ديونك فوراً!\n"
+    "4️⃣ **الحد اليومي:** يُسمح لكل عضو بنشر **بوست واحد فقط كل 24 ساعة**.\n\n"
+    "🚀 **نتمنى لك توفيقاً وتفاعلاً رائعاً!**"
+)
+
 # الثوابت الزمنية
 DAY_IN_SECONDS = 24 * 3600      # 24 ساعة بالثواني (حد النشر اليومي)
 WEEK_IN_SECONDS = 7 * 24 * 3600 # 7 أيام بالثواني (مدة صلاحية الديون)
@@ -27,7 +41,7 @@ user_verifications = {}      # حالات الفحص الحالية بالخاص
 GROUP_CHAT_ID = None        # ايدي الجروب
 BOT_USERNAME = None         # يوزر نيم البوت
 
-# --- 1️⃣ دالة نشر البوست في الجروب (بشكل بسيط وأنيق مع المعاينة) ---
+# --- 1️⃣ دالة نشر البوست في الجروب ---
 async def publish_post_to_group(context: ContextTypes.DEFAULT_TYPE, post_id: int, user_name: str, link: str):
     if not GROUP_CHAT_ID:
         return
@@ -50,7 +64,7 @@ async def publish_post_to_group(context: ContextTypes.DEFAULT_TYPE, post_id: int
         text=text,
         reply_markup=keyboard,
         parse_mode="Markdown",
-        disable_web_page_preview=False # لإظهار معاينة البوست والصورة
+        disable_web_page_preview=False
     )
 
 # --- 2️⃣ سيرفر التتبع والتحويل المباشر ---
@@ -110,19 +124,27 @@ async def send_verification_step(context: ContextTypes.DEFAULT_TYPE, user_id: in
         reply_markup=get_verification_keyboard(user_id)
     )
 
-# --- 3️⃣ الأوامر العامة ---
+# --- 3️⃣ أمر Start الترحيبي والتوضيحي ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    user_name = update.effective_user.first_name
 
+    # لو العضو جاي يعمل فحص لبوسته الموقوف
     if user_id in user_verifications:
         await send_verification_step(context, user_id)
     else:
-        await update.message.reply_text(
-            f"أهلاً بك يا {user_name}! 👋\n"
-            "أنا بوت تنظيم تفاعل LinkedIn.\n"
-            "يمكنك التفاعل مع البوستات مباشرة في الجروب بالضغط على (سجّل تفاعلي) لخصمها من ديونك تلقائياً! 🚀"
-        )
+        # إرسال الصورة التوضيحية مع الشرح
+        try:
+            await update.message.reply_photo(
+                photo=START_IMAGE_URL,
+                caption=START_TEXT,
+                parse_mode="Markdown"
+            )
+        except Exception:
+            # في حال كان رابط الصورة غير صالح يتم إرسال النص فقط
+            await update.message.reply_text(
+                text=START_TEXT,
+                parse_mode="Markdown"
+            )
 
 # --- 4️⃣ معالجة الرسائل والروابط في الجروب ---
 async def check_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
