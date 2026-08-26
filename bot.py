@@ -27,7 +27,7 @@ user_verifications = {}      # حالات الفحص الحالية بالخاص
 GROUP_CHAT_ID = None        # ايدي الجروب
 BOT_USERNAME = None         # يوزر نيم البوت
 
-# --- 1️⃣ دالة نشر البوست في الجروب ---
+# --- 1️⃣ دالة نشر البوست في الجروب (بشكل بسيط وأنيق مع المعاينة) ---
 async def publish_post_to_group(context: ContextTypes.DEFAULT_TYPE, post_id: int, user_name: str, link: str):
     if not GROUP_CHAT_ID:
         return
@@ -39,17 +39,18 @@ async def publish_post_to_group(context: ContextTypes.DEFAULT_TYPE, post_id: int
         ]
     ])
 
+    text = (
+        f"🚀 **بوست جديد من:** {user_name}\n\n"
+        f"🔗 {link}\n\n"
+        f"⚠️ **تنبيه:** للتفاعل وتسجيل نقاطك، اضغط على **الأزرار بالأسفل حصراً** وليس على الرابط أعلاه ⤵️"
+    )
+
     await context.bot.send_message(
         chat_id=GROUP_CHAT_ID,
-        text=f"🚀 **بوست جديد تم نشره!**\n\n"
-             f"👤 الناشر: **{user_name}**\n\n"
-             f"🚨 **تنبيه هام جداً (لتسجيل تفاعلك ولعدم الظلم):**\n"
-             f"تفاعل مع البوست عن طريق **الأزرار بالأسفل حصراً** ⤵️\n\n"
-             f"1️⃣ اضغط على `[ 🔗 1. افتح البوست ]` واعمل اللايك.\n"
-             f"2️⃣ ارجع واضغط على `[ ✅ 2. سجّل تفاعلي ]` فوراً.\n\n"
-             f"⚠️ *عدم الضغط على زر (سجّل تفاعلي) يعني عدم تسجيل تفاعلك في السيستم وسيطالبك البوت بهذا البوست لاحقاً بالخاص!*",
+        text=text,
         reply_markup=keyboard,
-        parse_mode="Markdown"
+        parse_mode="Markdown",
+        disable_web_page_preview=False # لإظهار معاينة البوست والصورة
     )
 
 # --- 2️⃣ سيرفر التتبع والتحويل المباشر ---
@@ -153,9 +154,7 @@ async def check_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         valid_link = matches[0]
         now = time.time()
 
-        # ========================================================
-        # 🔒 فحص الحد اليومي (بوست واحد كل 24 ساعة)
-        # ========================================================
+        # --- 🔒 فحص الحد اليومي (بوست واحد كل 24 ساعة) ---
         user_posts = [p for p in active_posts if p["user_id"] == user_id]
         if user_posts:
             last_post = max(user_posts, key=lambda x: x["timestamp"])
