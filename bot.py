@@ -15,10 +15,10 @@ TOKEN = "8755292870:AAGYFk5t_MddvDfN0lgZnhsDMTQYDxJI0Ps"
 # الرابط الخاص بسيرفرك على Render
 SERVER_URL = "https://linkedin-bot-9v0k.onrender.com" 
 
-# 🖼️ رابط الصورة التوضيحية التي تظهر للجدد (يمكنك تغييره برابط صورتك)
-START_IMAGE_URL = "https://drive.google.com/file/d/10tC2BkOG_XmA8biSxhxt56h0DYX_w_36/view?usp=sharing" 
+# 🖼️ رابط الصورة التوضيحية التي تظهر للجدد
+START_IMAGE_URL = "https://i.imgur.com/example.jpg" 
 
-# 📝 نص الشرح والترحيب بالعضو الجديد (صيغة HTML)
+# 📝 نص الشرح والترحيب بالعضو الجديد
 START_TEXT = (
     "👋 <b>أهلاً بك في بوت تنظيم تفاعل LinkedIn!</b>\n\n"
     "📌 <b>كيف يعمل البوت؟</b>\n\n"
@@ -69,7 +69,11 @@ def save_data():
     except Exception as e:
         logging.error(f"Error saving data: {e}")
 
-# --- 1️⃣ دالة نشر البوست في الجروب ---
+# --- 1️⃣ دالة فحص الحياة (Health Check) لإبقاء السيرفر يعلم أنه يعمل ---
+async def health_check(request):
+    return web.Response(text="Bot is Alive!", status=200)
+
+# --- 2️⃣ دالة نشر البوست في الجروب ---
 async def publish_post_to_group(context: ContextTypes.DEFAULT_TYPE, post_id: int, user_name: str, link: str):
     if not GROUP_CHAT_ID:
         return
@@ -100,7 +104,7 @@ async def publish_post_to_group(context: ContextTypes.DEFAULT_TYPE, post_id: int
     except Exception as e:
         logging.error(f"Error publishing post to group: {e}")
 
-# --- 2️⃣ سيرفر التتبع والتحويل المباشر ---
+# --- 3️⃣ سيرفر التتبع والتحويل المباشر ---
 async def handle_redirect(request):
     try:
         user_id = int(request.query.get("u", 0))
@@ -161,7 +165,7 @@ async def send_verification_step(context: ContextTypes.DEFAULT_TYPE, user_id: in
         parse_mode="HTML"
     )
 
-# --- 3️⃣ أمر Start الترحيبي والتوضيحي ---
+# --- 4️⃣ أمر Start الترحيبي والتوضيحي ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
 
@@ -180,7 +184,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 parse_mode="HTML"
             )
 
-# --- 4️⃣ معالجة الرسائل والروابط في الجروب ---
+# --- 5️⃣ معالجة الرسائل والروابط في الجروب ---
 async def check_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global GROUP_CHAT_ID, BOT_USERNAME
     message = update.message
@@ -204,9 +208,25 @@ async def check_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         linkedin_pattern = r"(https?://[^\s]*(?:linkedin\.com|lnkd\.in)[^\s]*)"
         matches = re.findall(linkedin_pattern, text, re.IGNORECASE)
 
+        # 🚫 إذا لم تحتوي الرسالة على رابط LinkedIn (سواء كلام أو رابط آخر)
         if not matches:
             try:
                 await message.delete()
+            except Exception:
+                pass
+
+            # إرسال تنبيه مؤقت للعضو يوضح أن الجروب مخصص لروابط لينكد إن فقط
+            try:
+                warn_msg = await context.bot.send_message(
+                    chat_id=message.chat_id,
+                    text=f"⚠️ يا {safe_name}، يُسمح فقط بنشر <b>روابط LinkedIn</b> في هذا الجروب!\nتم مسح رسالتك تلقائياً.",
+                    parse_mode="HTML"
+                )
+                await asyncio.sleep(10)
+                try:
+                    await warn_msg.delete()
+                except Exception:
+                    pass
             except Exception:
                 pass
             return
@@ -323,7 +343,7 @@ async def check_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except Exception:
                 pass
 
-# --- 5️⃣ معالجة الأزرار ---
+# --- 6️⃣ معالجة الأزرار ---
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     if not query:
@@ -491,11 +511,12 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except Exception as e:
                 logging.error(f"Error editing message on step update: {e}")
 
-# --- 6️⃣ دالة التشغيل الرئيسية ---
+# --- 7️⃣ دالة التشغيل الرئيسية ---
 async def main():
     load_data()  # تحميل البيانات عند الإقلاع
 
     web_app = web.Application()
+    web_app.router.add_get('/', health_check)        # رابط فحص الحياة لـ UptimeRobot
     web_app.router.add_get('/redirect', handle_redirect)
     runner = web.AppRunner(web_app)
     await runner.setup()
