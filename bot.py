@@ -40,7 +40,6 @@ logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s
 active_posts = []           # قائمة البوستات
 user_interactions = {}      # سجل تفاعلات كل عضو {user_id: set(post_ids_completed)}
 user_verifications = {}      # حالات الفحص الحالية بالخاص
-group_link_clicks = {}       # سجل ضغطات زرار فتح البوست في الجروب {(user_id, post_id): timestamp}
 GROUP_CHAT_ID = None        # ايدي الجروب
 BOT_USERNAME = None         # يوزر نيم البوت
 
@@ -76,7 +75,7 @@ async def delete_after(message, delay: int):
     except Exception:
         pass
 
-# --- 1️⃣ دالة فحص الحياة (Health Check) ---
+# --- 1️⃣ دالة فحص الحياة (Health Check) لـ UptimeRobot ---
 async def health_check(request):
     return web.Response(text="Bot is Alive!", status=200)
 
@@ -87,15 +86,17 @@ async def publish_post_to_group(context: ContextTypes.DEFAULT_TYPE, post_id: int
 
     safe_name = html.escape(user_name)
 
+    # الرابط يفتح مباشر بضغطة واحدة بدون تعقيد
     keyboard = InlineKeyboardMarkup([
         [
-            InlineKeyboardButton("🔗 1. افتح البوست", callback_data=f"gopen_{post_id}"),
+            InlineKeyboardButton("🔗 1. افتح البوست", url=link),
             InlineKeyboardButton("✅ 2. سجّل تفاعلي", callback_data=f"gverify_{post_id}")
         ]
     ])
 
     text = (
         f"🚀 <b>بوست جديد من:</b> {safe_name}\n\n"
+        f"🔗 {link}\n\n"
         f"⚠️ <b>تنبيه:</b> للتفاعل وتسجيل نقاطك، اضغط أولاً على <b>[ 🔗 1. افتح البوست ]</b> ثم اضغط على <b>[ ✅ 2. سجّل تفاعلي ]</b> ⤵️"
     )
 
@@ -337,46 +338,9 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     user_id = query.from_user.id
-    user_name = query.from_user.first_name or "عضو"
-    safe_name = html.escape(user_name)
     data = query.data
 
-    # 🔗 1. زر فتح البوست في الجروب
-    if data.startswith("gopen_"):
-        try:
-            post_id = int(data.split("_")[1])
-        except ValueError:
-            return
-
-        target_post = next((p for p in active_posts if p["id"] == post_id), None)
-        if not target_post:
-            try:
-                await query.answer("⚠️ البوست غير موجود أو قديم جداً.", show_alert=True)
-            except Exception:
-                pass
-            return
-
-        # تسجيل وقت وتاريخ الضغطة على الرابط
-        group_link_clicks[(user_id, post_id)] = time.time()
-
-        try:
-            await query.answer("🔗 تم تسجيل فتح الرابط! التقط التفاعل ثم اضغط على زر التسجيل.", show_alert=False)
-        except Exception:
-            pass
-
-        # إرسال رسالة موجهة للعضو بالرابط مباشرة ومسحها بعد 30 ثانية
-        try:
-            link_msg = await context.bot.send_message(
-                chat_id=query.message.chat_id,
-                text=f"🔗 تفضل يا {safe_name}، رابط البوست للتفاعل:\n{target_post['link']}",
-                disable_web_page_preview=False
-            )
-            asyncio.create_task(delete_after(link_msg, 30))
-        except Exception as e:
-            logging.error(f"Error sending temp link: {e}")
-        return
-
-    # ✅ 2. زر تسجيل التفاعل في الجروب
+    # ✅ 2. زر تسجيل التفاعل المباشر في الجروب
     if data.startswith("gverify_"):
         try:
             post_id = int(data.split("_")[1])
@@ -395,28 +359,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if target_post["user_id"] == user_id:
             try:
                 await query.answer("😊 ده بوستك أنت يا بطل! مش محتاج تسجل تفاعلك معاه.", show_alert=True)
-            except Exception:
-                pass
-            return
-
-        # 🛑 التحقق الذكي: هل داس العضو على زر فتح البوست الأول؟
-        click_time = group_link_clicks.get((user_id, post_id))
-        if not click_time:
-            try:
-                await query.answer(
-                    "❌ عذراً! يجب الضغط على زر [ 🔗 1. افتح البوست ] أولاً والتفاعل معه قبل تسجيل نقطتك!",
-                    show_alert=True
-                )
-            except Exception:
-                pass
-            return
-
-        if time.time() - click_time < 2:
-            try:
-                await query.answer(
-                    "⏳ يرجى الانتظار ثانيتين والتأكد من فتح البوست والتفاعل معه أولاً!",
-                    show_alert=True
-                )
             except Exception:
                 pass
             return
