@@ -79,14 +79,14 @@ async def delete_after(message, delay: int):
 async def health_check(request):
     return web.Response(text="Bot is Alive!", status=200)
 
-# --- 2️⃣ دالة نشر البوست في الجروب (توجيه مباشر لـ LinkedIn) ---
+# --- 2️⃣ دالة نشر البوست في الجروب (توجيه مباشر للرابط الأصلي) ---
 async def publish_post_to_group(context: ContextTypes.DEFAULT_TYPE, post_id: int, user_name: str, link: str):
     if not GROUP_CHAT_ID:
         return
 
     safe_name = html.escape(user_name)
 
-    # 🚀 الزر الأول يوجه فوراً ومباشرةً لرابط لينكد إن الاصلي
+    # 🔗 زر 1 يفتح رابط LinkedIn مباشر فوراً
     keyboard = InlineKeyboardMarkup([
         [
             InlineKeyboardButton("🔗 1. افتح البوست", url=link),
@@ -96,7 +96,7 @@ async def publish_post_to_group(context: ContextTypes.DEFAULT_TYPE, post_id: int
 
     text = (
         f"🚀 <b>بوست جديد من:</b> {safe_name}\n\n"
-        f"⚠️ <b>طريقة التفاعل:</b> اضغط على <b>[ 🔗 1. افتح البوست ]</b> للتفاعل في لينكد إن، ثم ارجع واضغط <b>[ ✅ 2. سجّل تفاعلي ]</b> لتسجيل نقطتك ⤵️"
+        f"⚠️ <b>طريقة التفاعل:</b> اضغط على <b>[ 🔗 1. افتح البوست ]</b> لتفتح البوست في لينكد إن وتعمل اللايك، ثم ارجع واضغط <b>[ ✅ 2. سجّل تفاعلي ]</b> لتسجيل نقطتك ⤵️"
     )
 
     try:
@@ -109,7 +109,7 @@ async def publish_post_to_group(context: ContextTypes.DEFAULT_TYPE, post_id: int
     except Exception as e:
         logging.error(f"Error publishing post to group: {e}")
 
-# --- 3️⃣ سيرفر التتبع (بوابة التفتيش بالخاص فقط) ---
+# --- 3️⃣ سيرفر التحويل للخاص فقط (لتدقيق الديون) ---
 async def handle_redirect(request):
     try:
         user_id = int(request.query.get("u", 0))
@@ -339,7 +339,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = query.from_user.id
     data = query.data
 
-    # ✅ 1. زر تسجيل التفاعل السريع من الجروب
+    # ✅ زر تسجيل التفاعل السريع من الجروب
     if data.startswith("gverify_"):
         try:
             post_id = int(data.split("_")[1])
@@ -386,7 +386,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             pass
         return
 
-    # 2. خطوات الفحص بالخاص
+    # 3. خطوات الفحص بالخاص
     if user_id not in user_verifications:
         try:
             await query.answer("⚠️ ليس لديك عملية فحص معلقة حالياً.", show_alert=True)
