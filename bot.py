@@ -24,23 +24,23 @@ START_TEXT = (
     "📌 <b>كيف يعمل البوت؟</b>\n\n"
     "1️⃣ <b>النشر في الجروب:</b> أرسل رابط بوستك في الجروب بشكل طبيعي.\n"
     "2️⃣ <b>فحص الديون:</b> إذا كان عليك بوستات سابقة لم تتفاعل معها، سيطلب منك البوت التفاعل معها أولاً بالخاص.\n"
-    "3️⃣ <b>التسجيل السريع:</b> يمكنك التفاعل مع أي بوست ينزل في الجروب بالضغط على زر <code>[ 🔗 1. افتح البوست ]</code> لخصمه من ديونك فوراً!\n"
+    "3️⃣ <b>التسجيل السريع:</b> يمكنك التفاعل مع أي بوست ينزل في الجروب بالضغط على زر <code>[ ✅ 2. سجّل تفاعلي ]</code> لخصمه من ديونك فوراً!\n"
     "4️⃣ <b>الحد اليومي:</b> يُسمح لكل عضو بنشر <b>بوست واحد فقط كل 24 ساعة</b>.\n\n"
     "🚀 <b>نتمنى لك توفيقاً وتفاعلاً رائعاً!</b>"
 )
 
-# الثوابت الزمنية
-DAY_IN_SECONDS = 24 * 3600      # 24 ساعة بالثواني (حد النشر اليومي)
-WEEK_IN_SECONDS = 7 * 24 * 3600 # 7 أيام بالثواني (مدة صلاحية الديون)
+DAY_IN_SECONDS = 24 * 3600      # 24 ساعة
+WEEK_IN_SECONDS = 7 * 24 * 3600 # 7 أيام
 
 DATA_FILE = "bot_data.json"
 
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 
-# --- قاعدة البيانات والحفظ الدائم (JSON) ---
+# --- قاعدة البيانات والسجلات ---
 active_posts = []           # قائمة البوستات
 user_interactions = {}      # سجل تفاعلات كل عضو {user_id: set(post_ids_completed)}
 user_verifications = {}      # حالات الفحص الحالية بالخاص
+group_link_clicks = {}       # سجل ضغطات زرار فتح البوست في الجروب {(user_id, post_id): timestamp}
 GROUP_CHAT_ID = None        # ايدي الجروب
 BOT_USERNAME = None         # يوزر نيم البوت
 
@@ -69,35 +69,34 @@ def save_data():
     except Exception as e:
         logging.error(f"Error saving data: {e}")
 
-# --- 1️⃣ دالة فحص الحياة (Health Check) لـ UptimeRobot ---
+async def delete_after(message, delay: int):
+    await asyncio.sleep(delay)
+    try:
+        await message.delete()
+    except Exception:
+        pass
+
+# --- 1️⃣ دالة فحص الحياة (Health Check) ---
 async def health_check(request):
     return web.Response(text="Bot is Alive!", status=200)
 
-# --- 2️⃣ دالة نشر البوست في الجروب مع تتبع الضغطات ---
+# --- 2️⃣ دالة نشر البوست في الجروب ---
 async def publish_post_to_group(context: ContextTypes.DEFAULT_TYPE, post_id: int, user_name: str, link: str):
-    global BOT_USERNAME
     if not GROUP_CHAT_ID:
         return
 
-    if not BOT_USERNAME:
-        bot_info = await context.bot.get_me()
-        BOT_USERNAME = bot_info.username
-
     safe_name = html.escape(user_name)
-
-    # رابط يحول المستخدم للبوت بالخاص لتسجيل الضغطة ومده بالرابط الأصلي
-    deep_link = f"https://t.me/{BOT_USERNAME}?start=open_{post_id}"
 
     keyboard = InlineKeyboardMarkup([
         [
-            InlineKeyboardButton("🔗 1. افتح البوست", url=deep_link),
+            InlineKeyboardButton("🔗 1. افتح البوست", callback_data=f"gopen_{post_id}"),
             InlineKeyboardButton("✅ 2. سجّل تفاعلي", callback_data=f"gverify_{post_id}")
         ]
     ])
 
     text = (
         f"🚀 <b>بوست جديد من:</b> {safe_name}\n\n"
-        f"⚠️ <b>تنبيه:</b> اضغط أولاً على <b>[ 🔗 1. افتح البوست ]</b> لفتح الرابط وتسجيل تفاعلك تلقائياً ⤵️"
+        f"⚠️ <b>تنبيه:</b> للتفاعل وتسجيل نقاطك، اضغط أولاً على <b>[ 🔗 1. افتح البوست ]</b> ثم اضغط على <b>[ ✅ 2. سجّل تفاعلي ]</b> ⤵️"
     )
 
     try:
@@ -105,13 +104,12 @@ async def publish_post_to_group(context: ContextTypes.DEFAULT_TYPE, post_id: int
             chat_id=GROUP_CHAT_ID,
             text=text,
             reply_markup=keyboard,
-            parse_mode="HTML",
-            disable_web_page_preview=True
+            parse_mode="HTML"
         )
     except Exception as e:
         logging.error(f"Error publishing post to group: {e}")
 
-# --- 3️⃣ سيرفر التحويل والتتبع للديون بالخاص ---
+# --- 3️⃣ سيرفر التحويل المباشر للخاص ---
 async def handle_redirect(request):
     try:
         user_id = int(request.query.get("u", 0))
@@ -172,46 +170,10 @@ async def send_verification_step(context: ContextTypes.DEFAULT_TYPE, user_id: in
         parse_mode="HTML"
     )
 
-# --- 4️⃣ أمر Start لمعالجة الديون وفتح روابط الجروب ---
+# --- 4️⃣ أمر Start ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    args = context.args
 
-    # 🔗 إذا جاء العضو عن طريق ضغط زر [ 🔗 1. افتح البوست ] من الجروب
-    if args and args[0].startswith("open_"):
-        try:
-            post_id = int(args[0].split("_")[1])
-            target_post = next((p for p in active_posts if p["id"] == post_id), None)
-            
-            if target_post:
-                if target_post["user_id"] == user_id:
-                    await update.message.reply_text("😊 ده بوستك أنت يا بطل! مش محتاج تسجل تفاعلك معاه.")
-                    return
-
-                # تسجيل التفاعل في السجل فوراً
-                if user_id not in user_interactions:
-                    user_interactions[user_id] = set()
-                user_interactions[user_id].add(post_id)
-                save_data()
-
-                owner_name = html.escape(target_post["user"])
-                link = target_post["link"]
-
-                keyboard = InlineKeyboardMarkup([
-                    [InlineKeyboardButton(f"🔗 اضغط هنا للانتقال لبوست {owner_name}", url=link)]
-                ])
-
-                await update.message.reply_text(
-                    f"✅ <b>تم تسجيل تفاعلك مع بوست {owner_name} بنجاح!</b>\n\n"
-                    f"اضغط على الزر بالأسفل لفتح البوست على LinkedIn وتفاعل معاه 👇",
-                    reply_markup=keyboard,
-                    parse_mode="HTML"
-                )
-                return
-        except Exception as e:
-            logging.error(f"Error handling deep link open: {e}")
-
-    # الشرح والترحيب العادي
     if user_id in user_verifications:
         await send_verification_step(context, user_id)
     else:
@@ -227,7 +189,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 parse_mode="HTML"
             )
 
-# --- 5️⃣ معالجة الرسائل والروابط في الجروب ---
+# --- 5️⃣ معالجة الرسائل والروابط ---
 async def check_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global GROUP_CHAT_ID, BOT_USERNAME
     message = update.message
@@ -251,7 +213,7 @@ async def check_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         linkedin_pattern = r"(https?://[^\s]*(?:linkedin\.com|lnkd\.in)[^\s]*)"
         matches = re.findall(linkedin_pattern, text, re.IGNORECASE)
 
-        # 🚫 مسح أي كلام ليس رابط LinkedIn
+        # 🚫 مسح أي كلام غير روابط LinkedIn
         if not matches:
             try:
                 await message.delete()
@@ -264,11 +226,7 @@ async def check_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     text=f"⚠️ يا {safe_name}، يُسمح فقط بنشر <b>روابط LinkedIn</b> في هذا الجروب!\nتم مسح رسالتك تلقائياً.",
                     parse_mode="HTML"
                 )
-                await asyncio.sleep(10)
-                try:
-                    await warn_msg.delete()
-                except Exception:
-                    pass
+                asyncio.create_task(delete_after(warn_msg, 10))
             except Exception:
                 pass
             return
@@ -276,7 +234,7 @@ async def check_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         valid_link = matches[0]
         now = time.time()
 
-        # 🔒 فحص الحد اليومي (بوست واحد كل 24 ساعة)
+        # 🔒 فحص الحد اليومي (بوست كل 24 ساعة)
         user_posts = [p for p in active_posts if p["user_id"] == user_id]
         if user_posts:
             last_post = max(user_posts, key=lambda x: x["timestamp"])
@@ -308,11 +266,7 @@ async def check_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         text=f"⚠️ يا {safe_name}، يُسمح بنشر بوست واحد فقط كل 24 ساعة!\n{time_msg}",
                         parse_mode="HTML"
                     )
-                    await asyncio.sleep(15)
-                    try:
-                        await temp_msg.delete()
-                    except Exception:
-                        pass
+                    asyncio.create_task(delete_after(temp_msg, 15))
                 return
 
         try:
@@ -322,7 +276,6 @@ async def check_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         completed_set = user_interactions.get(user_id, set())
 
-        # حساب الديون (بوستات آخر 7 أيام)
         uninteracted_posts = [
             p for p in active_posts 
             if p["user_id"] != user_id 
@@ -330,7 +283,6 @@ async def check_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             and (now - p.get("timestamp", 0)) <= WEEK_IN_SECONDS
         ]
 
-        # 🟢 الحالة الأولى: معندوش ديون
         if len(uninteracted_posts) == 0:
             new_post_id = len(active_posts) + 1
             new_post = {
@@ -348,14 +300,13 @@ async def check_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             try:
                 await context.bot.send_message(
                     chat_id=user_id,
-                    text=f"🎉 <b>عاش يا {safe_name}!</b> تم نشر بوستك فوراً في الجروب لأنك متفاعل مع الجميع! 🚀",
+                    text=f"🎉 <b>عاش يا {safe_name}!</b> لأنك متفاعل مع جميع البوستات المطلوبة، تم نشر بوستك فوراً في الجروب! 🚀",
                     parse_mode="HTML"
                 )
             except Forbidden:
                 pass
             return
 
-        # 🔴 الحالة الثانية: عنده ديون
         user_verifications[user_id] = {
             "pending_link": valid_link,
             "user_name": user_name,
@@ -377,11 +328,7 @@ async def check_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 reply_markup=btn,
                 parse_mode="HTML"
             )
-            await asyncio.sleep(20)
-            try:
-                await temp_msg.delete()
-            except Exception:
-                pass
+            asyncio.create_task(delete_after(temp_msg, 20))
 
 # --- 6️⃣ معالجة الأزرار ---
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -390,9 +337,46 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     user_id = query.from_user.id
+    user_name = query.from_user.first_name or "عضو"
+    safe_name = html.escape(user_name)
     data = query.data
 
-    # 1. زر فحص تسجيل التفاعل من الجروب
+    # 🔗 1. زر فتح البوست في الجروب
+    if data.startswith("gopen_"):
+        try:
+            post_id = int(data.split("_")[1])
+        except ValueError:
+            return
+
+        target_post = next((p for p in active_posts if p["id"] == post_id), None)
+        if not target_post:
+            try:
+                await query.answer("⚠️ البوست غير موجود أو قديم جداً.", show_alert=True)
+            except Exception:
+                pass
+            return
+
+        # تسجيل وقت وتاريخ الضغطة على الرابط
+        group_link_clicks[(user_id, post_id)] = time.time()
+
+        try:
+            await query.answer("🔗 تم تسجيل فتح الرابط! التقط التفاعل ثم اضغط على زر التسجيل.", show_alert=False)
+        except Exception:
+            pass
+
+        # إرسال رسالة موجهة للعضو بالرابط مباشرة ومسحها بعد 30 ثانية
+        try:
+            link_msg = await context.bot.send_message(
+                chat_id=query.message.chat_id,
+                text=f"🔗 تفضل يا {safe_name}، رابط البوست للتفاعل:\n{target_post['link']}",
+                disable_web_page_preview=False
+            )
+            asyncio.create_task(delete_after(link_msg, 30))
+        except Exception as e:
+            logging.error(f"Error sending temp link: {e}")
+        return
+
+    # ✅ 2. زر تسجيل التفاعل في الجروب
     if data.startswith("gverify_"):
         try:
             post_id = int(data.split("_")[1])
@@ -415,31 +399,53 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 pass
             return
 
-        user_completed = user_interactions.get(user_id, set())
+        # 🛑 التحقق الذكي: هل داس العضو على زر فتح البوست الأول؟
+        click_time = group_link_clicks.get((user_id, post_id))
+        if not click_time:
+            try:
+                await query.answer(
+                    "❌ عذراً! يجب الضغط على زر [ 🔗 1. افتح البوست ] أولاً والتفاعل معه قبل تسجيل نقطتك!",
+                    show_alert=True
+                )
+            except Exception:
+                pass
+            return
 
-        # التأكد مما إذا كان العضو قد فتح الرابط فعلياً أم لا
-        if post_id in user_completed:
-            owner_name = html.escape(target_post["user"])
+        if time.time() - click_time < 2:
             try:
                 await query.answer(
-                    f"✅ تم تسجيل تفاعلك مع بوست {owner_name} بنجاح! 👏\n\n"
-                    f"البوست ده اتخصم من ديونك وسرّع نشر بوستاتك القادمة.",
+                    "⏳ يرجى الانتظار ثانيتين والتأكد من فتح البوست والتفاعل معه أولاً!",
                     show_alert=True
                 )
             except Exception:
                 pass
-        else:
+            return
+
+        if user_id not in user_interactions:
+            user_interactions[user_id] = set()
+
+        if post_id in user_interactions[user_id]:
             try:
-                await query.answer(
-                    "❌ لم يتم فتح البوست بعد!\n\n"
-                    "يجب أولاً الضغط على زر [ 🔗 1. افتح البوست ] لفتح الرابط وتسجيل تفاعلك تلقائياً.",
-                    show_alert=True
-                )
+                await query.answer("⚠️ أنت بالفعل مسجّل تفاعلك مع البوست ده قبل كدا!", show_alert=True)
             except Exception:
                 pass
+            return
+
+        user_interactions[user_id].add(post_id)
+        save_data()
+
+        owner_name = html.escape(target_post["user"])
+        try:
+            await query.answer(
+                f"✅ تم تسجيل تفاعلك مع بوست {owner_name} بنجاح! 👏\n\n"
+                f"اتخصم البوست ده من ديونك، ولما تنزل بوستك هينزل أسرع بدون مشاكل!",
+                show_alert=True
+            )
+        except Exception:
+            pass
         return
 
-    # 2. خطوات الفحص بالخاص
+    # 3. خطوات الفحص بالخاص
     if user_id not in user_verifications:
         try:
             await query.answer("⚠️ ليس لديك عملية فحص معلقة حالياً.", show_alert=True)
