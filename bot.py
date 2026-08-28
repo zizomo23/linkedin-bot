@@ -6,7 +6,7 @@ import time
 import html
 import json
 from aiohttp import web
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, MessageHandler, CallbackQueryHandler, filters
 from telegram.error import Forbidden, BadRequest
 
@@ -40,7 +40,7 @@ logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s
 active_posts = []           # قائمة البوستات
 user_interactions = {}      # سجل تفاعلات كل عضو {user_id: set(post_ids_completed)}
 user_verifications = {}      # حالات الفحص الحالية بالخاص
-recent_group_opens = {}      # سجل فتح روابط الجروب لكل عضو {(user_id, post_id): timestamp}
+recent_group_opens = {}      # سجل فتح روابط الجروب المخصص لكل عضو {(user_id, post_id): timestamp}
 
 GROUP_CHAT_ID = None        # ايدي الجروب
 BOT_USERNAME = None         # يوزر نيم البوت
@@ -81,120 +81,30 @@ async def delete_after(message, delay: int):
 async def health_check(request):
     return web.Response(text="Bot is Alive!", status=200)
 
-# --- 2️⃣ API لتسجيل الفتح الخاص بعضو محدد ---
-async def handle_api_record_open(request):
-    try:
-        user_id = int(request.query.get("u", 0))
-        post_id = int(request.query.get("p", 0))
-        if user_id and post_id:
-            recent_group_opens[(user_id, post_id)] = time.time()
-            return web.json_response({"status": "ok"})
-    except Exception as e:
-        logging.error(f"Record open API error: {e}")
-    return web.json_response({"status": "error"}, status=400)
-
-# --- 3️⃣ سيرفر التتبع السريع لروابط الجروب عبر WebApp ---
-async def handle_group_redirect(request):
-    try:
-        post_id = int(request.query.get("p", 0))
-        target_post = next((p for p in active_posts if p["id"] == post_id), None)
-        
-        if not target_post:
-            return web.Response(text="رابط غير صالح أو غير موجود", status=404)
-
-        target_link = target_post["link"]
-
-        html_content = f"""<!DOCTYPE html>
-<html>
-<head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Opening LinkedIn...</title>
-    <script src="https://telegram.org/js/telegram-web-app.js"></script>
-    <style>
-        body {{
-            background-color: #0f172a;
-            color: #ffffff;
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            height: 100vh;
-            margin: 0;
-            text-align: center;
-        }}
-        .loader {{
-            border: 4px solid #334155;
-            border-top: 4px solid #38bdf8;
-            border-radius: 50%;
-            width: 40px;
-            height: 40px;
-            animation: spin 1s linear infinite;
-            margin: 0 auto 20px auto;
-        }}
-        @keyframes spin {{
-            0% {{ transform: rotate(0deg); }}
-            100% {{ transform: rotate(360deg); }}
-        }}
-    </style>
-</head>
-<body>
-    <div>
-        <div class="loader"></div>
-        <p style="font-size: 18px; font-weight: bold;">جاري فتح البوست في LinkedIn... 🚀</p>
-    </div>
-    <script>
-        const targetUrl = "{target_link}";
-        const tg = window.Telegram?.WebApp;
-        if (tg) {{
-            tg.ready();
-            tg.expand();
-        }}
-        
-        const userId = tg?.initDataUnsafe?.user?.id || 0;
-        const postId = {post_id};
-
-        function doRedirect() {{
-            if (tg && tg.openLink) {{
-                tg.openLink(targetUrl);
-                tg.close();
-            }} else {{
-                window.location.href = targetUrl;
-            }}
-        }}
-
-        if (userId && postId) {{
-            fetch('/api/record_open?u=' + userId + '&p=' + postId)
-                .then(() => doRedirect())
-                .catch(() => doRedirect());
-        }} else {{
-            doRedirect();
-        }}
-    </script>
-</body>
-</html>"""
-        return web.Response(text=html_content, content_type='text/html')
-    except Exception as e:
-        logging.error(f"Group redirect error: {e}")
-        return web.Response(text="حدث خطأ أثناء فتح الرابط", status=500)
-
-# --- 4️⃣ سيرفر التحويل للخاص (لتدقيق الديون) ---
+# --- 2️⃣ سيرفر التتبع والتحويل الموحد (للخاص والجروب مع تتبع لكل آيدي) ---
 async def handle_redirect(request):
     try:
         user_id = int(request.query.get("u", 0))
         post_id = int(request.query.get("p", 0))
         
-        if user_id in user_verifications:
-            user_data = user_verifications[user_id]
-            current_index = user_data["current_index"]
-            uninteracted = user_data["uninteracted_posts"]
+        target_post = next((p for p in active_posts if p["id"] == post_id), None)
+        
+        if target_post:
+            # 📌 تسجيل ان هذا العضو بالذات قام بفتح هذا البوست في الوقت الحالي
+            recent_group_opens[(user_id, post_id)] = time.time()
             
-            if current_index < len(uninteracted):
-                target_post = uninteracted[current_index]
-                if target_post["id"] == post_id:
-                    user_data["has_clicked_redirect"] = True
-                    user_data["link_opened_time"] = time.time()
-                    raise web.HTTPFound(target_post["link"])
+            # فحص الخطوات أثناء التحقق في الخاص
+            if user_id in user_verifications:
+                user_data = user_verifications[user_id]
+                current_index = user_data["current_index"]
+                uninteracted = user_data["uninteracted_posts"]
+                
+                if current_index < len(uninteracted):
+                    if uninteracted[current_index]["id"] == post_id:
+                        user_data["has_clicked_redirect"] = True
+                        user_data["link_opened_time"] = time.time()
+                        
+            raise web.HTTPFound(target_post["link"])
     except web.HTTPFound as redirect:
         raise redirect
     except Exception as e:
@@ -202,17 +112,16 @@ async def handle_redirect(request):
     
     return web.Response(text="رابط غير صالح أو انتهت الجلسة", status=400)
 
-# --- 5️⃣ دالة نشر البوست في الجروب ---
+# --- 3️⃣ دالة نشر البوست في الجروب ---
 async def publish_post_to_group(context: ContextTypes.DEFAULT_TYPE, post_id: int, user_name: str, link: str):
     if not GROUP_CHAT_ID:
         return
 
     safe_name = html.escape(user_name)
-    tracking_link = f"{SERVER_URL}/gredirect?p={post_id}"
 
     keyboard = InlineKeyboardMarkup([
         [
-            InlineKeyboardButton("🔗 1. افتح البوست", web_app=WebAppInfo(url=tracking_link)),
+            InlineKeyboardButton("🔗 1. افتح البوست", callback_data=f"gopen_{post_id}"),
             InlineKeyboardButton("✅ 2. سجّل تفاعلي", callback_data=f"gverify_{post_id}")
         ]
     ])
@@ -220,10 +129,10 @@ async def publish_post_to_group(context: ContextTypes.DEFAULT_TYPE, post_id: int
     text = (
         f"🚀 <b>بوست جديد من:</b> {safe_name}\n\n"
         f"📌 <b>رابط المنشور:</b> {link}\n\n"
-        f"⚠️ <b>تنبيه هام جداً لتسجيل تفاعلك:</b>\n"
-        f"الدخول المباشر للرابط أعلاه <b>لن يسجّل تفاعلك بالبوت!</b> لخصم البوست من ديونك، يجب استخدام الأزرار بالأسفل حصراً:\n"
-        f"1️⃣ اضغط <b>[ 🔗 1. افتح البوست ]</b>\n"
-        f"2️⃣ ثم ارجع واضغط <b>[ ✅ 2. سجّل تفاعلي ]</b> ⤵️"
+        f"⚠️ <b>تنبيه هام لتسجيل تفاعلك:</b>\n"
+        f"الدخول المباشر للرابط أعلاه <b>لن يسجّل تفاعلك بالبوت!</b> لخصم البوست من ديونك، يجب التفاعل باستخدام الأزرار بالأسفل حصراً:\n"
+        f"1️⃣ اضغط <b>[ 🔗 1. افتح البوست ]</b> لفتح رابط التتبع المخصص لك.\n"
+        f"2️⃣ ثم ارجع واضغط <b>[ ✅ 2. سجّل تفاعلي ]</b> لتسجيل نقطتك ⤵️"
     )
 
     try:
@@ -273,9 +182,30 @@ async def send_verification_step(context: ContextTypes.DEFAULT_TYPE, user_id: in
         parse_mode="HTML"
     )
 
-# --- 6️⃣ أمر Start ---
+# --- 4️⃣ أمر Start ومُعالجة Deep Links ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
+
+    # دعم الفتح المباشر عبر رابط Deep Link من الجروب
+    if context.args and context.args[0].startswith("gopen_"):
+        try:
+            post_id = int(context.args[0].split("_")[1])
+            target_post = next((p for p in active_posts if p["id"] == post_id), None)
+            if target_post:
+                tracking_link = f"{SERVER_URL}/redirect?u={user_id}&p={post_id}"
+                post_owner = html.escape(target_post["user"])
+                kb = InlineKeyboardMarkup([[
+                    InlineKeyboardButton(f"🚀 افتح بوست {post_owner} في LinkedIn", url=tracking_link)
+                ]])
+                await update.message.reply_text(
+                    f"🔗 <b>تفضل رابط البوست الخاص بك للفتح والتفاعل:</b>\n\n"
+                    f"افتح الرابط ثم ارجع للجروب واضغط على <code>[ ✅ 2. سجّل تفاعلي ]</code> لتسجيل نقطتك!",
+                    reply_markup=kb,
+                    parse_mode="HTML"
+                )
+                return
+        except Exception as e:
+            logging.error(f"Error handling deep link start: {e}")
 
     if user_id in user_verifications:
         await send_verification_step(context, user_id)
@@ -292,7 +222,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 parse_mode="HTML"
             )
 
-# --- 7️⃣ معالجة الرسائل والروابط ---
+# --- 5️⃣ معالجة الرسائل والروابط ---
 async def check_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global GROUP_CHAT_ID, BOT_USERNAME
     message = update.message
@@ -433,7 +363,7 @@ async def check_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             asyncio.create_task(delete_after(temp_msg, 20))
 
-# --- 8️⃣ معالجة الأزرار ---
+# --- 6️⃣ معالجة الأزرار ---
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     if not query:
@@ -441,6 +371,63 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     user_id = query.from_user.id
     data = query.data
+
+    # 🔗 زر "افتح البوست" المخصص من الجروب
+    if data.startswith("gopen_"):
+        try:
+            post_id = int(data.split("_")[1])
+        except ValueError:
+            return
+
+        target_post = next((p for p in active_posts if p["id"] == post_id), None)
+        if not target_post:
+            try:
+                await query.answer("⚠️ البوست غير موجود أو قديم جداً.", show_alert=True)
+            except Exception:
+                pass
+            return
+
+        if target_post["user_id"] == user_id:
+            try:
+                await query.answer("😊 ده بوستك أنت يا بطل! مش محتاج تفتحه.", show_alert=True)
+            except Exception:
+                pass
+            return
+
+        tracking_link = f"{SERVER_URL}/redirect?u={user_id}&p={post_id}"
+        post_owner = html.escape(target_post["user"])
+
+        kb = InlineKeyboardMarkup([[
+            InlineKeyboardButton(f"🚀 افتح بوست {post_owner} في LinkedIn", url=tracking_link)
+        ]])
+
+        try:
+            # إرسال رابط التتبع الخاص بالحساب عبر الخاص
+            await context.bot.send_message(
+                chat_id=user_id,
+                text=f"🔗 <b>تفضل رابط البوست الخاص بك للفتح والتفاعل:</b>\n\n"
+                     f"افتح الرابط واعمل اللايك، ثم ارجع للجروب واضغط على <b>[ ✅ 2. سجّل تفاعلي ]</b> لتسجيل نقطتك!",
+                reply_markup=kb,
+                parse_mode="HTML"
+            )
+            await query.answer("📩 تم إرسال رابط التتبع المخصص لك في الخاص! تفاعل معه ثم اضغط [ ✅ 2. سجّل تفاعلي ]", show_alert=True)
+        except Forbidden:
+            # إذا لم يبدأ العضو المحادثة بالخاص بعد
+            start_btn = InlineKeyboardMarkup([[
+                InlineKeyboardButton("📩 اضغط هنا لبدء البوت واستلام الرابط", url=f"https://t.me/{BOT_USERNAME}?start=gopen_{post_id}")
+            ]])
+            temp_msg = await context.bot.send_message(
+                chat_id=query.message.chat_id,
+                text=f"⚠️ يا <a href='tg://user?id={user_id}'>{html.escape(query.from_user.first_name)}</a>، يرجى الضغط على الزر بالأسفل لبدء البوت بالخاص واستلام رابط البوست!",
+                reply_markup=start_btn,
+                parse_mode="HTML"
+            )
+            asyncio.create_task(delete_after(temp_msg, 15))
+            try:
+                await query.answer("⚠️ يرجى بدء البوت في الخاص أولاً لاستلام الرابط!", show_alert=True)
+            except Exception:
+                pass
+        return
 
     # ✅ زر تسجيل التفاعل السريع من الجروب
     if data.startswith("gverify_"):
@@ -465,12 +452,24 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 pass
             return
 
-        # 🛑 التحقق من فتح رابط البوست لهذا العضو تحديداً (Per-User Verification)
+        # 🛑 التحقق المخصص لهذا العضو بالذات (user_id, post_id)
         open_time = recent_group_opens.get((user_id, post_id), 0)
+
         if not open_time or (time.time() - open_time > 600):  # نافذة زمنية مدتها 10 دقائق
             try:
                 await query.answer(
                     "❌ عذراً! يجب الضغط على زر [ 🔗 1. افتح البوست ] والتفاعل معه أولاً قبل تسجيل نقطتك!",
+                    show_alert=True
+                )
+            except Exception:
+                pass
+            return
+
+        # التأكد من مرور ثانيتين لضمان إتمام الفتح والتفاعل
+        if time.time() - open_time < 2:
+            try:
+                await query.answer(
+                    "⏳ يرجى الانتظار ثانيتين والتأكد من فتح الرابط والتفاعل معه أولاً قبل التسجيل.",
                     show_alert=True
                 )
             except Exception:
@@ -613,15 +612,13 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except Exception as e:
                 logging.error(f"Error editing message on step update: {e}")
 
-# --- 9️⃣ دالة التشغيل الرئيسية ---
+# --- 7️⃣ دالة التشغيل الرئيسية ---
 async def main():
     load_data()
 
     web_app = web.Application()
     web_app.router.add_get('/', health_check)
     web_app.router.add_get('/redirect', handle_redirect)
-    web_app.router.add_get('/gredirect', handle_group_redirect)
-    web_app.router.add_get('/api/record_open', handle_api_record_open)
     runner = web.AppRunner(web_app)
     await runner.setup()
     
