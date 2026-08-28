@@ -6,7 +6,7 @@ import time
 import html
 import json
 from aiohttp import web
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
 from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, MessageHandler, CallbackQueryHandler, filters
 from telegram.error import Forbidden, BadRequest
 
@@ -38,27 +38,22 @@ logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s
 
 # --- قاعدة البيانات والسجلات ---
 active_posts = []           # قائمة البوستات
-user_interactions = {}      # سجل تفاعلات كل عضو المكتملة {user_id: set(post_ids_completed)}
+user_interactions = {}      # سجل تفاعلات كل عضو {user_id: set(post_ids_completed)}
 user_verifications = {}      # حالات الفحص الحالية بالخاص
-user_group_opens = {}        # تتبع فتح رابط الجروب لكل عضو بفرده {user_id: set(post_ids_opened)}
+recent_group_opens = {}      # سجل فتح روابط الجروب لكل عضو {(user_id, post_id): timestamp}
 
 GROUP_CHAT_ID = None        # ايدي الجروب
 BOT_USERNAME = None         # يوزر نيم البوت
 
 def load_data():
-    global active_posts, user_interactions, user_group_opens, GROUP_CHAT_ID
+    global active_posts, user_interactions, GROUP_CHAT_ID
     if os.path.exists(DATA_FILE):
         try:
             with open(DATA_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
                 active_posts = data.get("active_posts", [])
-                
                 user_interactions_raw = data.get("user_interactions", {})
                 user_interactions = {int(k): set(v) for k, v in user_interactions_raw.items()}
-                
-                user_group_opens_raw = data.get("user_group_opens", {})
-                user_group_opens = {int(k): set(v) for k, v in user_group_opens_raw.items()}
-                
                 GROUP_CHAT_ID = data.get("group_chat_id", None)
         except Exception as e:
             logging.error(f"Error loading data: {e}")
@@ -68,7 +63,6 @@ def save_data():
         data = {
             "active_posts": active_posts,
             "user_interactions": {str(k): list(v) for k, v in user_interactions.items()},
-            "user_group_opens": {str(k): list(v) for k, v in user_group_opens.items()},
             "group_chat_id": GROUP_CHAT_ID
         }
         with open(DATA_FILE, "w", encoding="utf-8") as f:
@@ -87,7 +81,104 @@ async def delete_after(message, delay: int):
 async def health_check(request):
     return web.Response(text="Bot is Alive!", status=200)
 
-# --- 2️⃣ سيرفر التحويل للخاص (لتدقيق الديون) ---
+# --- 2️⃣ API لتسجيل الفتح الخاص بعضو محدد ---
+async def handle_api_record_open(request):
+    try:
+        user_id = int(request.query.get("u", 0))
+        post_id = int(request.query.get("p", 0))
+        if user_id and post_id:
+            recent_group_opens[(user_id, post_id)] = time.time()
+            return web.json_response({"status": "ok"})
+    except Exception as e:
+        logging.error(f"Record open API error: {e}")
+    return web.json_response({"status": "error"}, status=400)
+
+# --- 3️⃣ سيرفر التتبع السريع لروابط الجروب عبر WebApp ---
+async def handle_group_redirect(request):
+    try:
+        post_id = int(request.query.get("p", 0))
+        target_post = next((p for p in active_posts if p["id"] == post_id), None)
+        
+        if not target_post:
+            return web.Response(text="رابط غير صالح أو غير موجود", status=404)
+
+        target_link = target_post["link"]
+
+        html_content = f"""<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Opening LinkedIn...</title>
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <style>
+        body {{
+            background-color: #0f172a;
+            color: #ffffff;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            margin: 0;
+            text-align: center;
+        }}
+        .loader {{
+            border: 4px solid #334155;
+            border-top: 4px solid #38bdf8;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 20px auto;
+        }}
+        @keyframes spin {{
+            0% {{ transform: rotate(0deg); }}
+            100% {{ transform: rotate(360deg); }}
+        }}
+    </style>
+</head>
+<body>
+    <div>
+        <div class="loader"></div>
+        <p style="font-size: 18px; font-weight: bold;">جاري فتح البوست في LinkedIn... 🚀</p>
+    </div>
+    <script>
+        const targetUrl = "{target_link}";
+        const tg = window.Telegram?.WebApp;
+        if (tg) {{
+            tg.ready();
+            tg.expand();
+        }}
+        
+        const userId = tg?.initDataUnsafe?.user?.id || 0;
+        const postId = {post_id};
+
+        function doRedirect() {{
+            if (tg && tg.openLink) {{
+                tg.openLink(targetUrl);
+                tg.close();
+            }} else {{
+                window.location.href = targetUrl;
+            }}
+        }}
+
+        if (userId && postId) {{
+            fetch('/api/record_open?u=' + userId + '&p=' + postId)
+                .then(() => doRedirect())
+                .catch(() => doRedirect());
+        }} else {{
+            doRedirect();
+        }}
+    </script>
+</body>
+</html>"""
+        return web.Response(text=html_content, content_type='text/html')
+    except Exception as e:
+        logging.error(f"Group redirect error: {e}")
+        return web.Response(text="حدث خطأ أثناء فتح الرابط", status=500)
+
+# --- 4️⃣ سيرفر التحويل للخاص (لتدقيق الديون) ---
 async def handle_redirect(request):
     try:
         user_id = int(request.query.get("u", 0))
@@ -111,17 +202,17 @@ async def handle_redirect(request):
     
     return web.Response(text="رابط غير صالح أو انتهت الجلسة", status=400)
 
-# --- 3️⃣ دالة نشر البوست في الجروب ---
+# --- 5️⃣ دالة نشر البوست في الجروب ---
 async def publish_post_to_group(context: ContextTypes.DEFAULT_TYPE, post_id: int, user_name: str, link: str):
     if not GROUP_CHAT_ID:
         return
 
     safe_name = html.escape(user_name)
+    tracking_link = f"{SERVER_URL}/gredirect?p={post_id}"
 
-    # زر 1 وزر 2 أصبحا أزرار كولباك ليتعرف البوت على العضو بدقة
     keyboard = InlineKeyboardMarkup([
         [
-            InlineKeyboardButton("🔗 1. افتح البوست", callback_data=f"gopen_{post_id}"),
+            InlineKeyboardButton("🔗 1. افتح البوست", web_app=WebAppInfo(url=tracking_link)),
             InlineKeyboardButton("✅ 2. سجّل تفاعلي", callback_data=f"gverify_{post_id}")
         ]
     ])
@@ -129,10 +220,10 @@ async def publish_post_to_group(context: ContextTypes.DEFAULT_TYPE, post_id: int
     text = (
         f"🚀 <b>بوست جديد من:</b> {safe_name}\n\n"
         f"📌 <b>رابط المنشور:</b> {link}\n\n"
-        f"⚠️ <b>خطوات تسليم التفاعل لخصم البوست من ديونك:</b>\n"
-        f"1️⃣ اضغط على <b>[ 🔗 1. افتح البوست ]</b> لتسجيل فتح الجلسة لحسابك.\n"
-        f"2️⃣ افتح رابط LinkedIn أعلاه وتفاعل معه.\n"
-        f"3️⃣ ارجع واضغط على <b>[ ✅ 2. سجّل تفاعلي ]</b> لتسجيل نقطتك ⤵️"
+        f"⚠️ <b>تنبيه هام جداً لتسجيل تفاعلك:</b>\n"
+        f"الدخول المباشر للرابط أعلاه <b>لن يسجّل تفاعلك بالبوت!</b> لخصم البوست من ديونك، يجب استخدام الأزرار بالأسفل حصراً:\n"
+        f"1️⃣ اضغط <b>[ 🔗 1. افتح البوست ]</b>\n"
+        f"2️⃣ ثم ارجع واضغط <b>[ ✅ 2. سجّل تفاعلي ]</b> ⤵️"
     )
 
     try:
@@ -182,7 +273,7 @@ async def send_verification_step(context: ContextTypes.DEFAULT_TYPE, user_id: in
         parse_mode="HTML"
     )
 
-# --- 4️⃣ أمر Start ---
+# --- 6️⃣ أمر Start ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
 
@@ -201,7 +292,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 parse_mode="HTML"
             )
 
-# --- 5️⃣ معالجة الرسائل والروابط ---
+# --- 7️⃣ معالجة الرسائل والروابط ---
 async def check_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global GROUP_CHAT_ID, BOT_USERNAME
     message = update.message
@@ -342,7 +433,7 @@ async def check_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             asyncio.create_task(delete_after(temp_msg, 20))
 
-# --- 6️⃣ معالجة الأزرار ---
+# --- 8️⃣ معالجة الأزرار ---
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     if not query:
@@ -351,46 +442,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = query.from_user.id
     data = query.data
 
-    # 1️⃣ زر تسجيل فتح البوست لحساب هذا العضو بالتحديد
-    if data.startswith("gopen_"):
-        try:
-            post_id = int(data.split("_")[1])
-        except ValueError:
-            return
-
-        target_post = next((p for p in active_posts if p["id"] == post_id), None)
-        if not target_post:
-            try:
-                await query.answer("⚠️ البوست غير موجود أو قديم جداً.", show_alert=True)
-            except Exception:
-                pass
-            return
-
-        if target_post["user_id"] == user_id:
-            try:
-                await query.answer("😊 ده بوستك أنت يا بطل! مش محتاج تسجل تفاعلك معاه.", show_alert=True)
-            except Exception:
-                pass
-            return
-
-        # تسحيل إن العضو ده بالتحديد فتح البوست
-        if user_id not in user_group_opens:
-            user_group_opens[user_id] = set()
-
-        user_group_opens[user_id].add(post_id)
-        save_data()
-
-        try:
-            await query.answer(
-                "✅ تم فتح جلسة التفاعل لحسابك بنجاح!\n\n"
-                "افتح رابط LinkedIn الموجود في الرسالة واعمل التفاعل، ثم ارجع واضغط على [ ✅ 2. سجّل تفاعلي ].",
-                show_alert=True
-            )
-        except Exception:
-            pass
-        return
-
-    # 2️⃣ زر تسجيل التفاعل السريع من الجروب
+    # ✅ زر تسجيل التفاعل السريع من الجروب
     if data.startswith("gverify_"):
         try:
             post_id = int(data.split("_")[1])
@@ -413,12 +465,12 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 pass
             return
 
-        # 🛑 التحقق الذكي: هل العضو الحالي داس بنفسه على زر 1 قبل كده؟
-        opened_posts_by_user = user_group_opens.get(user_id, set())
-        if post_id not in opened_posts_by_user:
+        # 🛑 التحقق من فتح رابط البوست لهذا العضو تحديداً (Per-User Verification)
+        open_time = recent_group_opens.get((user_id, post_id), 0)
+        if not open_time or (time.time() - open_time > 600):  # نافذة زمنية مدتها 10 دقائق
             try:
                 await query.answer(
-                    "❌ عذراً! يجب الضغط على زر [ 🔗 1. افتح البوست ] من حسابك أولاً قبل تسجيل نقطتك!",
+                    "❌ عذراً! يجب الضغط على زر [ 🔗 1. افتح البوست ] والتفاعل معه أولاً قبل تسجيل نقطتك!",
                     show_alert=True
                 )
             except Exception:
@@ -435,7 +487,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 pass
             return
 
-        # تسجيل النقطة رسمياً وخصم الدين
         user_interactions[user_id].add(post_id)
         save_data()
 
@@ -450,7 +501,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             pass
         return
 
-    # 3️⃣ خطوات الفحص بالخاص
+    # 3. خطوات الفحص بالخاص
     if user_id not in user_verifications:
         try:
             await query.answer("⚠️ ليس لديك عملية فحص معلقة حالياً.", show_alert=True)
@@ -562,13 +613,15 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except Exception as e:
                 logging.error(f"Error editing message on step update: {e}")
 
-# --- 7️⃣ دالة التشغيل الرئيسية ---
+# --- 9️⃣ دالة التشغيل الرئيسية ---
 async def main():
     load_data()
 
     web_app = web.Application()
     web_app.router.add_get('/', health_check)
     web_app.router.add_get('/redirect', handle_redirect)
+    web_app.router.add_get('/gredirect', handle_group_redirect)
+    web_app.router.add_get('/api/record_open', handle_api_record_open)
     runner = web.AppRunner(web_app)
     await runner.setup()
     
