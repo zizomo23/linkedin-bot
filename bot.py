@@ -90,7 +90,7 @@ async def handle_redirect(request):
         target_post = next((p for p in active_posts if p["id"] == post_id), None)
         
         if target_post:
-            # 📌 تسجيل ان هذا العضو بالذات قام بفتح هذا البوست في الوقت الحالي
+            # 📌 تسجيل أن هذا العضو بالذات قام بفتح هذا البوست في الوقت الحالي
             recent_group_opens[(user_id, post_id)] = time.time()
             
             # فحص الخطوات أثناء التحقق في الخاص
@@ -130,8 +130,8 @@ async def publish_post_to_group(context: ContextTypes.DEFAULT_TYPE, post_id: int
         f"🚀 <b>بوست جديد من:</b> {safe_name}\n\n"
         f"📌 <b>رابط المنشور:</b> {link}\n\n"
         f"⚠️ <b>تنبيه هام لتسجيل تفاعلك:</b>\n"
-        f"الدخول المباشر للرابط أعلاه <b>لن يسجّل تفاعلك بالبوت!</b> لخصم البوست من ديونك، يجب التفاعل باستخدام الأزرار بالأسفل حصراً:\n"
-        f"1️⃣ اضغط <b>[ 🔗 1. افتح البوست ]</b> لفتح رابط التتبع المخصص لك.\n"
+        f"الدخول المباشر للرابط أعلاه <b>لن يسجّل تفاعلك بالبوت!</b> لخصم البوست من ديونك، استخدم الأزرار بالأسفل حصراً:\n"
+        f"1️⃣ اضغط <b>[ 🔗 1. افتح البوست ]</b> لإنشاء رابط التتبع السريع المخصص لك.\n"
         f"2️⃣ ثم ارجع واضغط <b>[ ✅ 2. سجّل تفاعلي ]</b> لتسجيل نقطتك ⤵️"
     )
 
@@ -182,30 +182,9 @@ async def send_verification_step(context: ContextTypes.DEFAULT_TYPE, user_id: in
         parse_mode="HTML"
     )
 
-# --- 4️⃣ أمر Start ومُعالجة Deep Links ---
+# --- 4️⃣ أمر Start ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-
-    # دعم الفتح المباشر عبر رابط Deep Link من الجروب
-    if context.args and context.args[0].startswith("gopen_"):
-        try:
-            post_id = int(context.args[0].split("_")[1])
-            target_post = next((p for p in active_posts if p["id"] == post_id), None)
-            if target_post:
-                tracking_link = f"{SERVER_URL}/redirect?u={user_id}&p={post_id}"
-                post_owner = html.escape(target_post["user"])
-                kb = InlineKeyboardMarkup([[
-                    InlineKeyboardButton(f"🚀 افتح بوست {post_owner} في LinkedIn", url=tracking_link)
-                ]])
-                await update.message.reply_text(
-                    f"🔗 <b>تفضل رابط البوست الخاص بك للفتح والتفاعل:</b>\n\n"
-                    f"افتح الرابط ثم ارجع للجروب واضغط على <code>[ ✅ 2. سجّل تفاعلي ]</code> لتسجيل نقطتك!",
-                    reply_markup=kb,
-                    parse_mode="HTML"
-                )
-                return
-        except Exception as e:
-            logging.error(f"Error handling deep link start: {e}")
 
     if user_id in user_verifications:
         await send_verification_step(context, user_id)
@@ -372,7 +351,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = query.from_user.id
     data = query.data
 
-    # 🔗 زر "افتح البوست" المخصص من الجروب
+    # 🔗 زر "افتح البوست" داخل الجروب (ينشئ رسالة تتبع مؤقتة مباشرة جوه الجروب)
     if data.startswith("gopen_"):
         try:
             post_id = int(data.split("_")[1])
@@ -396,37 +375,29 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         tracking_link = f"{SERVER_URL}/redirect?u={user_id}&p={post_id}"
         post_owner = html.escape(target_post["user"])
+        user_mention = f"<a href='tg://user?id={user_id}'>{html.escape(query.from_user.first_name)}</a>"
 
         kb = InlineKeyboardMarkup([[
-            InlineKeyboardButton(f"🚀 افتح بوست {post_owner} في LinkedIn", url=tracking_link)
+            InlineKeyboardButton(f"🚀 اضغط هنا لفتح بوست {post_owner}", url=tracking_link)
         ]])
 
         try:
-            # إرسال رابط التتبع الخاص بالحساب عبر الخاص
-            await context.bot.send_message(
-                chat_id=user_id,
-                text=f"🔗 <b>تفضل رابط البوست الخاص بك للفتح والتفاعل:</b>\n\n"
-                     f"افتح الرابط واعمل اللايك، ثم ارجع للجروب واضغط على <b>[ ✅ 2. سجّل تفاعلي ]</b> لتسجيل نقطتك!",
+            # رسالة تتبع مؤقتة تظهر في الجروب وتتمسح تلقائياً بعد 15 ثانية
+            temp_msg = await context.bot.send_message(
+                chat_id=query.message.chat_id,
+                text=f"🔗 تفضل يا {user_mention} رابط التتبع الخاص بك:\n"
+                     f"افتحه لعمل اللايك، ثم ارجع واضغط <b>[ ✅ 2. سجّل تفاعلي ]</b>",
                 reply_markup=kb,
                 parse_mode="HTML"
             )
-            await query.answer("📩 تم إرسال رابط التتبع المخصص لك في الخاص! تفاعل معه ثم اضغط [ ✅ 2. سجّل تفاعلي ]", show_alert=True)
-        except Forbidden:
-            # إذا لم يبدأ العضو المحادثة بالخاص بعد
-            start_btn = InlineKeyboardMarkup([[
-                InlineKeyboardButton("📩 اضغط هنا لبدء البوت واستلام الرابط", url=f"https://t.me/{BOT_USERNAME}?start=gopen_{post_id}")
-            ]])
-            temp_msg = await context.bot.send_message(
-                chat_id=query.message.chat_id,
-                text=f"⚠️ يا <a href='tg://user?id={user_id}'>{html.escape(query.from_user.first_name)}</a>، يرجى الضغط على الزر بالأسفل لبدء البوت بالخاص واستلام رابط البوست!",
-                reply_markup=start_btn,
-                parse_mode="HTML"
-            )
             asyncio.create_task(delete_after(temp_msg, 15))
+            
             try:
-                await query.answer("⚠️ يرجى بدء البوت في الخاص أولاً لاستلام الرابط!", show_alert=True)
+                await query.answer()
             except Exception:
                 pass
+        except Exception as e:
+            logging.error(f"Error sending group open message: {e}")
         return
 
     # ✅ زر تسجيل التفاعل السريع من الجروب
