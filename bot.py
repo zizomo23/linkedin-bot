@@ -40,6 +40,8 @@ logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s
 active_posts = []           # قائمة البوستات
 user_interactions = {}      # سجل تفاعلات كل عضو {user_id: set(post_ids_completed)}
 user_verifications = {}      # حالات الفحص الحالية بالخاص
+recent_group_opens = {}      # سجل فتح روابط الجروب {post_id: timestamp}
+
 GROUP_CHAT_ID = None        # ايدي الجروب
 BOT_USERNAME = None         # يوزر نيم البوت
 
@@ -79,37 +81,23 @@ async def delete_after(message, delay: int):
 async def health_check(request):
     return web.Response(text="Bot is Alive!", status=200)
 
-# --- 2️⃣ دالة نشر البوست في الجروب (توجيه مباشر للرابط الأصلي) ---
-async def publish_post_to_group(context: ContextTypes.DEFAULT_TYPE, post_id: int, user_name: str, link: str):
-    if not GROUP_CHAT_ID:
-        return
-
-    safe_name = html.escape(user_name)
-
-    # 🔗 زر 1 يفتح رابط LinkedIn مباشر فوراً
-    keyboard = InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton("🔗 1. افتح البوست", url=link),
-            InlineKeyboardButton("✅ 2. سجّل تفاعلي", callback_data=f"gverify_{post_id}")
-        ]
-    ])
-
-    text = (
-        f"🚀 <b>بوست جديد من:</b> {safe_name}\n\n"
-        f"⚠️ <b>طريقة التفاعل:</b> اضغط على <b>[ 🔗 1. افتح البوست ]</b> لتفتح البوست في لينكد إن وتعمل اللايك، ثم ارجع واضغط <b>[ ✅ 2. سجّل تفاعلي ]</b> لتسجيل نقطتك ⤵️"
-    )
-
+# --- 2️⃣ سيرفر التتبع السريع لروابط الجروب ---
+async def handle_group_redirect(request):
     try:
-        await context.bot.send_message(
-            chat_id=GROUP_CHAT_ID,
-            text=text,
-            reply_markup=keyboard,
-            parse_mode="HTML"
-        )
+        post_id = int(request.query.get("p", 0))
+        target_post = next((p for p in active_posts if p["id"] == post_id), None)
+        
+        if target_post:
+            recent_group_opens[post_id] = time.time()
+            raise web.HTTPFound(target_post["link"])
+    except web.HTTPFound as redirect:
+        raise redirect
     except Exception as e:
-        logging.error(f"Error publishing post to group: {e}")
+        logging.error(f"Group redirect error: {e}")
+    
+    return web.Response(text="رابط غير صالح أو غير موجود", status=404)
 
-# --- 3️⃣ سيرفر التحويل للخاص فقط (لتدقيق الديون) ---
+# --- 3️⃣ سيرفر التحويل للخاص (لتدقيق الديون) ---
 async def handle_redirect(request):
     try:
         user_id = int(request.query.get("u", 0))
@@ -132,6 +120,36 @@ async def handle_redirect(request):
         logging.error(f"Redirect error: {e}")
     
     return web.Response(text="رابط غير صالح أو انتهت الجلسة", status=400)
+
+# --- 4️⃣ دالة نشر البوست في الجروب ---
+async def publish_post_to_group(context: ContextTypes.DEFAULT_TYPE, post_id: int, user_name: str, link: str):
+    if not GROUP_CHAT_ID:
+        return
+
+    safe_name = html.escape(user_name)
+    tracking_link = f"{SERVER_URL}/gredirect?p={post_id}"
+
+    keyboard = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("🔗 1. افتح البوست", url=tracking_link),
+            InlineKeyboardButton("✅ 2. سجّل تفاعلي", callback_data=f"gverify_{post_id}")
+        ]
+    ])
+
+    text = (
+        f"🚀 <b>بوست جديد من:</b> {safe_name}\n\n"
+        f"⚠️ <b>طريقة التفاعل:</b> اضغط على <b>[ 🔗 1. افتح البوست ]</b> لتفتح البوست في لينكد إن وتعمل اللايك، ثم ارجع واضغط <b>[ ✅ 2. سجّل تفاعلي ]</b> لتسجيل نقطتك ⤵️"
+    )
+
+    try:
+        await context.bot.send_message(
+            chat_id=GROUP_CHAT_ID,
+            text=text,
+            reply_markup=keyboard,
+            parse_mode="HTML"
+        )
+    except Exception as e:
+        logging.error(f"Error publishing post to group: {e}")
 
 def get_verification_keyboard(user_id):
     data = user_verifications[user_id]
@@ -170,7 +188,7 @@ async def send_verification_step(context: ContextTypes.DEFAULT_TYPE, user_id: in
         parse_mode="HTML"
     )
 
-# --- 4️⃣ أمر Start ---
+# --- 5️⃣ أمر Start ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
 
@@ -189,7 +207,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 parse_mode="HTML"
             )
 
-# --- 5️⃣ معالجة الرسائل والروابط ---
+# --- 6️⃣ معالجة الرسائل والروابط ---
 async def check_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global GROUP_CHAT_ID, BOT_USERNAME
     message = update.message
@@ -330,7 +348,7 @@ async def check_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             asyncio.create_task(delete_after(temp_msg, 20))
 
-# --- 6️⃣ معالجة الأزرار ---
+# --- 7️⃣ معالجة الأزرار ---
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     if not query:
@@ -358,6 +376,18 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if target_post["user_id"] == user_id:
             try:
                 await query.answer("😊 ده بوستك أنت يا بطل! مش محتاج تسجل تفاعلك معاه.", show_alert=True)
+            except Exception:
+                pass
+            return
+
+        # 🛑 التحقق من فتح رابط البوست أولاً
+        open_time = recent_group_opens.get(post_id, 0)
+        if not open_time or (time.time() - open_time > 600):  # نافذة زمنية مدتها 10 دقائق
+            try:
+                await query.answer(
+                    "❌ عذراً! يجب الضغط على زر [ 🔗 1. افتح البوست ] والتفاعل معه أولاً قبل تسجيل نقطتك!",
+                    show_alert=True
+                )
             except Exception:
                 pass
             return
@@ -498,13 +528,14 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except Exception as e:
                 logging.error(f"Error editing message on step update: {e}")
 
-# --- 7️⃣ دالة التشغيل الرئيسية ---
+# --- 8️⃣ دالة التشغيل الرئيسية ---
 async def main():
     load_data()
 
     web_app = web.Application()
     web_app.router.add_get('/', health_check)
     web_app.router.add_get('/redirect', handle_redirect)
+    web_app.router.add_get('/gredirect', handle_group_redirect)
     runner = web.AppRunner(web_app)
     await runner.setup()
     
